@@ -15,8 +15,16 @@ _error_msg = {
 }
 
 
-def LoadSpline(curve_id):
-    url = "https://alpha.splinecloud.com/api/curves/id/{}".format(curve_id)
+def LoadSpline(curve_id_or_url):
+    url_split = curve_id_or_url.split("/")
+    if len(url_split) > 1:
+        url = curve_id_or_url
+    else:
+        curve_id = url_split[-1]
+        if "spl_" not in curve_id or len(curve_id) != 16:
+            raise ValueError("Wrong curve id was specified")
+        url = "https://splinecloud.com/api/curves/id/{}".format(curve_id)
+
     response = requests.get(url)
     curve = json.loads(response.content)
 
