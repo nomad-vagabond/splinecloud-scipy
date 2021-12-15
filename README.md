@@ -1,5 +1,5 @@
 # splinecloud-scipy
-A Python client for [SplineCloud](https://splinecloud.com/)
+A Python client for [SplineCloud](https://splinecloud.com/) API
 
 ## Find or define functional relation with SplineCloud
 
