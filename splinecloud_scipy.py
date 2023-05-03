@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import requests, json
 import numpy as np
+import pandas as pd
 import scipy.interpolate as si
 from scipy.optimize import brentq
 from functools import partial
@@ -15,6 +16,22 @@ _error_msg = {
 }
 
 
+def LoadSubset(subset_id_or_url):
+    url_split = subset_id_or_url.split("/")
+    if len(url_split) > 1:
+        url = subset_id_or_url
+    else:
+        subset_id = url_split[-1]
+        if "sbt_" not in subset_id or len(subset_id) != 16:
+            raise ValueError("Wrong subset id was specified")
+        url = "https://splinecloud.com/api/subsets/{}".format(subset_id)
+    
+    response = requests.get(url)
+    subset = json.loads(response.content)['table']
+    
+    return pd.DataFrame.from_dict(subset)
+        
+        
 def LoadSpline(curve_id_or_url):
     url_split = curve_id_or_url.split("/")
     if len(url_split) > 1:
@@ -23,7 +40,7 @@ def LoadSpline(curve_id_or_url):
         curve_id = url_split[-1]
         if "spl_" not in curve_id or len(curve_id) != 16:
             raise ValueError("Wrong curve id was specified")
-        url = "https://splinecloud.com/api/curves/id/{}".format(curve_id)
+        url = "https://splinecloud.com/api/curves/{}".format(curve_id)
 
     response = requests.get(url)
     curve = json.loads(response.content)
