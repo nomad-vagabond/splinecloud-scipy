@@ -94,8 +94,12 @@ class PPolyInvertible(si.PPoly):
         coeffs = self.c.T[n + self.k]
         tbreak = self.x[n + self.k]
         poly = self.eval_poly(t, coeffs, tbreak)
-        
-        return poly - xvalue
+        error = poly - xvalue
+
+        if abs(error) < 1e-12:
+            return 0.0
+
+        return error
 
     def eval_poly(self, t, coeffs, tbreak):
         # poly = coeffs[0]*(t - tbreak)**3  + coeffs[1]*(t - tbreak)**2 + coeffs[2]*(t - tbreak) + coeffs[3]
