@@ -83,15 +83,6 @@ class PPolyInvertible(si.PPoly):
         
         return intervals
 
-    # def _check_monotonous(self, intervals):
-    #     check = True
-    #     for interval in intervals:
-    #         if interval[1] < interval[0]:
-    #             check = False
-    #             break
-        
-    #     return check
-
     def evalinv(self, x):
         pinterval = self._get_interval(x, self.pintervals)
         if pinterval is not None:
