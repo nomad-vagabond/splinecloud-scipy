@@ -7,9 +7,9 @@ The client library is based on SciPy and allows to load data and curves from Spl
 ## Example of loading spline curve
 
 ```python
-from splinecloud_scipy import LoadSpline
+from splinecloud_scipy import load_spline
 curve_id = 'spl_K5t56P5bormJ' # curve id can be taken from the SplineCloud
-spline = LoadSpline(curve_id)
+spline = load_spline(curve_id)
 ```
 
 ## Evaluating spline curve for a range of x values
@@ -28,9 +28,9 @@ plt.show()
 ## Example of loading data in your code
 
 ```python
-from splinecloud_scipy import LoadSubset
+from splinecloud_scipy import load_subset
 subset_id = 'sbt_nDO4XmmYqeGI' # subset id can be taken from the SplineCloud
-columns, table = LoadSubset(subset_id)
+columns, table = load_subset(subset_id)
 ```
 
 ```

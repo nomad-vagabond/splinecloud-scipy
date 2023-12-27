@@ -15,7 +15,7 @@ def fill_array(table, subset, columns, num_rows):
             table[ri, ci] = subset[col_name][str(ri)]
 
 
-def LoadSubset(subset_id_or_url):
+def load_subset(subset_id_or_url):
     url_split = subset_id_or_url.split("/")
     if len(url_split) > 1:
         url = subset_id_or_url
@@ -41,7 +41,7 @@ def LoadSubset(subset_id_or_url):
     return columns, table
         
         
-def LoadSpline(curve_id_or_url):
+def load_spline(curve_id_or_url):
     url_split = curve_id_or_url.split("/")
     if len(url_split) > 1:
         url = curve_id_or_url
