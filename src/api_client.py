@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import requests, json
-import pandas as pd
 import numpy as np
 
 
@@ -8,6 +7,12 @@ from .parametric_spline import ParametricUnivariateSpline
 
 
 SPLINECLOUD_API_URL = "https://splinecloud.com/api"
+
+
+def fill_array(table, subset, columns, num_rows):
+    for ci, col_name in enumerate(columns):
+        for ri in range(num_rows):
+            table[ri, ci] = subset[col_name][str(ri)]
 
 
 def LoadSubset(subset_id_or_url):
@@ -22,8 +27,18 @@ def LoadSubset(subset_id_or_url):
     
     response = requests.get(url)
     subset = json.loads(response.content)['table']
-    
-    return pd.DataFrame.from_dict(subset)
+
+    columns = list(subset.keys())
+    num_rows = len(list(subset.values())[0])
+    table = np.zeros((num_rows, len(columns)))
+
+    try:
+        fill_array(table, subset, columns, num_rows)
+    except ValueError:
+        table = np.empty((num_rows, len(columns)), dtype=object)
+        fill_array(table, subset, columns, num_rows)
+
+    return columns, table
         
         
 def LoadSpline(curve_id_or_url):
