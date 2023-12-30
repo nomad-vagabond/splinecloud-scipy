@@ -120,6 +120,104 @@ class TestParametricUnivariateSpline(unittest.TestCase):
         self.assertEqual(len(y), len(y_))
         self.assertTrue(np.allclose(y, y_))
 
+    def test_spline_k3_C2break_eval(self):
+        t = [0.0, 0.0, 0.0, 0.0, 0.27, 0.33, 0.33, 0.45, 1.0, 1.0, 1.0, 1.0]
+        cx = [0.11, 0.64, 1.19, 1.81, 3.0, 3.88, 4.94, 6.02]
+        cy = [0.05, 0.07, 0.12, 0.23, 0.23, 0.17, 0.1, 0.08]
+        k = 3
+
+        tcck = t, cx, cy, k
+        spline = ParametricUnivariateSpline.from_tcck(tcck)
+        
+        knots = np.linspace(0.0, 1.0, 11)
+
+        x, y = splev(knots, (np.array(t), np.array([cx, cy]), k))
+        y_ = spline.eval(x)
+
+        self.assertEqual(len(y), len(y_))
+        self.assertTrue(np.allclose(y, y_))
+
+    def test_spline_k3_C2break_eval_in_knots(self):
+        t = [0.0, 0.0, 0.0, 0.0, 0.27, 0.33, 0.33, 0.45, 1.0, 1.0, 1.0, 1.0]
+        cx = [0.11, 0.64, 1.19, 1.81, 3.0, 3.88, 4.94, 6.02]
+        cy = [0.05, 0.07, 0.12, 0.23, 0.23, 0.17, 0.1, 0.08]
+        k = 3
+
+        tcck = t, cx, cy, k
+        spline = ParametricUnivariateSpline.from_tcck(tcck)
+        knots = t[k:-k]
+        x, y = splev(knots, (np.array(t), np.array([cx, cy]), k))
+        y_ = spline.eval(x)
+
+        self.assertEqual(len(y), len(y_))
+        self.assertTrue(np.allclose(y, y_))
+
+    
+    def test_spline_k3_C1break_eval(self):
+        t = [0.0, 0.0, 0.0, 0.0, 0.27, 0.33, 0.33, 0.33, 0.45, 1.0, 1.0, 1.0, 1.0]
+        cx = [0.11, 0.64, 1.19, 1.81, 2.39, 3.15, 3.88, 4.94, 6.03]
+        cy = [0.05, 0.07, 0.12, 0.23, 0.26, 0.23, 0.17, 0.01, 0.08]
+        k = 3
+
+        tcck = t, cx, cy, k
+        spline = ParametricUnivariateSpline.from_tcck(tcck)
+        
+        knots = np.linspace(0.0, 1.0, 11)
+
+        x, y = splev(knots, (np.array(t), np.array([cx, cy]), k))
+        y_ = spline.eval(x)
+
+        self.assertEqual(len(y), len(y_))
+        self.assertTrue(np.allclose(y, y_))
+
+    def test_spline_k3_C1break_eval_in_knots(self):
+        t = [0.0, 0.0, 0.0, 0.0, 0.27, 0.33, 0.33, 0.33, 0.45, 1.0, 1.0, 1.0, 1.0]
+        cx = [0.11, 0.64, 1.19, 1.81, 2.39, 3.15, 3.88, 4.94, 6.03]
+        cy = [0.05, 0.07, 0.12, 0.23, 0.26, 0.23, 0.17, 0.01, 0.08]
+        k = 3
+
+        tcck = t, cx, cy, k
+        spline = ParametricUnivariateSpline.from_tcck(tcck)
+        knots = t[k:-k]
+        x, y = splev(knots, (np.array(t), np.array([cx, cy]), k))
+        y_ = spline.eval(x)
+
+        self.assertEqual(len(y), len(y_))
+        self.assertTrue(np.allclose(y, y_))
+
+
+    def test_spline_k3_C0break_eval(self):
+        t = [0.0, 0.0, 0.0, 0.0, 0.27, 0.33, 0.33, 0.33, 0.33, 0.45, 1.0, 1.0, 1.0, 1.0]
+        cx = [0.11, 0.64, 1.19, 1.81, 2.1, 2.77, 3.15, 3.88, 4.94, 6.03]
+        cy = [0.05, 0.07, 0.12, 0.23, 0.24, 0.24, 0.23, 0.17, 0.1, 0.08]
+        k = 3
+
+        tcck = t, cx, cy, k
+        spline = ParametricUnivariateSpline.from_tcck(tcck)
+        
+        knots = np.linspace(0.0, 1.0, 141)
+
+        x, y = splev(knots, (np.array(t), np.array([cx, cy]), k))
+        y_ = spline.eval(x)
+
+        self.assertEqual(len(y), len(y_))
+        self.assertTrue(np.allclose(y, y_))
+
+    def test_spline_k3_C0break_eval_in_knots(self):
+        t = [0.0, 0.0, 0.0, 0.0, 0.27, 0.33, 0.33, 0.33, 0.33, 0.45, 1.0, 1.0, 1.0, 1.0]
+        cx = [0.11, 0.64, 1.19, 1.81, 2.1, 2.77, 3.15, 3.88, 4.94, 6.03]
+        cy = [0.05, 0.07, 0.12, 0.23, 0.24, 0.24, 0.23, 0.17, 0.1, 0.08]
+        k = 3
+
+        tcck = t, cx, cy, k
+        spline = ParametricUnivariateSpline.from_tcck(tcck)
+        knots = t[k:-k]
+        x, y = splev(knots, (np.array(t), np.array([cx, cy]), k))
+        y_ = spline.eval(x)
+
+        self.assertEqual(len(y), len(y_))
+        self.assertTrue(np.allclose(y, y_))
+
 
 if __name__ == '__main__':
     unittest.main()
