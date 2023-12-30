@@ -66,12 +66,14 @@ class PPolyInvertible(si.PPoly):
     def _get_interval(self, coord, intervals):
         i = 0
         for interval in intervals:
-            if coord >= interval[0] and coord <= interval[1]:
+            if coord >= interval[0] and coord < interval[1]:
                 return i
             else:
                 i += 1
-        
-        return None
+
+        ## patch end ca
+        if coord == interval[1]:
+            return i-1
 
     def _form_intervals(self, breaks):
         n = len(breaks) - 2*self.k - 1
