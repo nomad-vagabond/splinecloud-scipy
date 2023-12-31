@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='splinecloud-scipy',
-    version='0.0.1',
+    version='0.0.2',
     author = "Vadym Pasko",
     author_email = "vadym@splinecloud.com",
     description = "A SplineCloud client based on SciPy.",
