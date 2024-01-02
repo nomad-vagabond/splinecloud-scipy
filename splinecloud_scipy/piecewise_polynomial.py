@@ -32,36 +32,9 @@ class PPolyInvertible(si.PPoly):
         
         return poly
 
-    def eval_oninterval(self, n, numpoints=50):
-        coeffs = self.c.T[n + self.k]
-        tbreak = self.x[n + self.k]
-
-        a = self.intervals[n][0]
-        b = self.intervals[n][1]
-
-        tpoints = np.linspace(a, b, numpoints)
-        ppoints = np.zeros(len(tpoints))
-        i = 0
-        for t in tpoints:
-            ppoints[i] = self.eval_poly(t, coeffs, tbreak)
-            i += 1
-        
-        return ppoints
-
     def project_intervals(self, spline):
         breaks = spline(self.x)
         self.pintervals = self._form_intervals(breaks)
-
-    def _get_poly(self, t, n, xvalue=0):
-        coeffs = self.c.T[n + self.k]
-        tbreak = self.x[n + self.k]
-        poly = self.eval_poly(t, coeffs, tbreak)
-        error = poly - xvalue
-
-        if abs(error) < 1e-12:
-            return 0.0
-
-        return error
 
     def _get_interval(self, coord, intervals):
         i = 0
@@ -71,7 +44,7 @@ class PPolyInvertible(si.PPoly):
             else:
                 i += 1
 
-        ## patch end ca
+        ## patch end case
         if coord == interval[1]:
             return i-1
 
@@ -85,10 +58,36 @@ class PPolyInvertible(si.PPoly):
         
         return intervals
 
+    def _guess_error(self, t, coeffs, tbreak, xvalue):
+        poly = self.eval_poly(t, coeffs, tbreak)
+        error = poly - xvalue
+
+        if abs(error) < 1e-12:
+            return 0.0
+
+        return error
+
     def evalinv(self, x):
-        pinterval = self._get_interval(x, self.pintervals)
-        if pinterval is not None:
-            interval = self.intervals[pinterval]
-            t = brentq(partial(self._get_poly, n=pinterval, xvalue=x), 
-                       interval[0], interval[1])
+        n = self._get_interval(x, self.pintervals)
+        if n is not None:
+            tmin, tmax = self.intervals[n]
+
+            coeffs = self.c.T[n + self.k]
+            tbreak = self.x[n + self.k]
+
+            xmin = self.eval_poly(tmin, coeffs, tbreak)
+            xmax = self.eval_poly(tmax, coeffs, tbreak)
+
+            if abs(x - xmin) < 1e-12:
+                return tmin
+
+            elif abs(x - xmax) < 1e-12:
+                return tmax
+
+            if x < xmin or x > xmax:
+                # x may be out of interval if C0 continuity isn't kept
+                return
+
+            t = brentq(partial(self._guess_error, coeffs=coeffs, tbreak=tbreak, xvalue=x), tmin, tmax)
+
             return t
