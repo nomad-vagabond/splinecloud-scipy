@@ -1,16 +1,3 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
-setup(
-    name='splinecloud-scipy',
-    version='0.0.3',
-    author = "Vadym Pasko",
-    author_email = "vadym@splinecloud.com",
-    description = "A SplineCloud client based on SciPy.",
-    license = "MIT",
-    packages=find_packages(),
-    install_requires=[
-        'numpy',
-        'scipy',
-        'requests',
-    ],
-)
+setup()
