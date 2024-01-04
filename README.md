@@ -25,6 +25,8 @@ plt.plot(X,Y)
 plt.show()
 ```
 
+![Spline curve](/docs/curve.png?raw=true)
+
 ## Example of loading data in your code
 
 ```python
