@@ -7,13 +7,13 @@ from .piecewise_polynomial import PPolyInvertible
 
 _error_msg = {
 
-    1: 'Parameter t must be a list or an array that represents knot vector.',
+    1: 'Parameter t must be a list or an array that represents knot Vector1D.',
 
     2: 'Method parameter must be one of: "interp", "smooth", "lsq".'
 
 }
 
-Vector = Union[list[float], np.array]
+Vector1D = Union[list[float], np.ndarray]
 
 
 class ParametricUnivariateSpline:
@@ -25,8 +25,8 @@ class ParametricUnivariateSpline:
 
         Parameters:
         ----------
-        t: Vector - knot vector
-        cc: tuple of control point vectors - (x:Vector, y:Vector)
+        t: Vector1D - knot Vector1D
+        cc: tuple of control point vectors - (x:Vector1D, y:Vector1D)
         k: int - spline degree
 
         Returns:
@@ -47,19 +47,19 @@ class ParametricUnivariateSpline:
         
         return self
 
-    def __call__(self, tpoints):
+    def __call__(self, tpoints:Union[float, Vector1D]):
         x_points = self.spline_x(tpoints)
         y_points = self.spline_y(tpoints)
         
         return x_points, y_points
 
-    def _normalize_knotvector(self, knots=None, d=1.0):
-        knots = knots or self.knots
+    def _normalize_knotvector(self):
+        knots = self.knots
         num_knots = len(knots)
-        ka = (knots[-1] - knots[0]) / d
+        ka = (knots[-1] - knots[0]) / 1.0
         knots_norm = np.empty(num_knots)
         for i in range(num_knots):
-            knots_norm[i] = d - ((knots[-1] - knots[i])) / ka
+            knots_norm[i] = 1.0 - ((knots[-1] - knots[i])) / ka
         
         return knots_norm
 
@@ -77,11 +77,11 @@ class ParametricUnivariateSpline:
         self.spline_x.ppoly = PPolyInvertible.from_splinefunc(self.spline_x)
         self.spline_y.ppoly = PPolyInvertible.from_splinefunc(self.spline_y)
 
-    def eval(self, x):
+    def eval(self, x:Union[float, Vector1D]):
         if hasattr(x, '__iter__'):
             t = np.array([self.spline_x.ppoly.evalinv(xi) for xi in x])
             return self.spline_y.ppoly(t)
         
         else:
             t = self.spline_x.ppoly.evalinv(x)
-            return self.spline_y.ppoly(t)
+            return float(self.spline_y.ppoly(t))

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "splinecloud-scipy"
-version = "0.0.5"
+version = "0.0.6"
 description = "A SplineCloud client based on SciPy."
 readme = "README.md"
 authors = [{ name = "Vadym Pasko", email = "vadym@splinecloud.com" }]
@@ -14,12 +14,13 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
 ]
-keywords = ["splinecloud", "spline", "BSpline", "interpolation", "regression", "curvefitting"]
+keywords = ["splinecloud", "spline", "BSpline", "interpolation", "regression", "curve fitting"]
 dependencies = ['numpy', 'scipy', 'requests']
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 
 [project.optional-dependencies]
-dev = ["responses"]
+dev = ["responses", "mypy"]
+test = ["responses", "matplotlib", "mypy"]
 
 [project.urls]
 Homepage = "https://github.com/nomad-vagabond/splinecloud-scipy"

@@ -1,8 +1,13 @@
 from functools import partial
+from typing import Sequence
 
 import numpy as np
 import scipy.interpolate as si
 from scipy.optimize import brentq
+
+
+Vector1D = Sequence[float]
+Vector2D = Sequence[Sequence[float]]
 
 
 class PPolyInvertible(si.PPoly):
@@ -10,8 +15,7 @@ class PPolyInvertible(si.PPoly):
 
     @classmethod
     def construct_fast(cls, c, x, extrapolate=None, axis=0):
-        self = super(PPolyInvertible, cls).construct_fast(
-            c, x, extrapolate=extrapolate, axis=axis)
+        self = super(PPolyInvertible, cls).construct_fast(c, x, extrapolate=extrapolate, axis=axis)
         
         self.k = len(self.c) - 1
         self.powers = np.arange(self.k, -1, -1)
@@ -25,7 +29,7 @@ class PPolyInvertible(si.PPoly):
         
         return self
 
-    def eval_poly(self, t, coeffs, tbreak):
+    def eval_poly(self, t:float, coeffs:Vector1D, tbreak:float) -> float:
         poly = 0
         for c, p in zip(coeffs, self.powers):
             poly += c*(t - tbreak)**p
@@ -36,19 +40,19 @@ class PPolyInvertible(si.PPoly):
         breaks = spline(self.x)
         self.pintervals = self._form_intervals(breaks)
 
-    def _get_interval(self, coord, intervals):
+    def _get_interval(self, xvalue:float, intervals:Vector2D) -> int:
         i = 0
         for interval in intervals:
-            if coord >= interval[0] and coord < interval[1]:
+            if xvalue >= interval[0] and xvalue < interval[1]:
                 return i
             else:
                 i += 1
 
         ## patch end case
-        if coord == interval[1]:
+        if xvalue == interval[1]:
             return i-1
 
-    def _form_intervals(self, breaks):
+    def _form_intervals(self, breaks:Vector1D) -> np.ndarray:
         n = len(breaks) - 2*self.k - 1
         intervals = np.zeros((n, 2))
         i = self.k
@@ -58,7 +62,7 @@ class PPolyInvertible(si.PPoly):
         
         return intervals
 
-    def _guess_error(self, t, coeffs, tbreak, xvalue):
+    def _guess_error(self, t:float, coeffs:Vector1D, tbreak:float, xvalue:float) -> float:
         poly = self.eval_poly(t, coeffs, tbreak)
         error = poly - xvalue
 
@@ -67,8 +71,8 @@ class PPolyInvertible(si.PPoly):
 
         return error
 
-    def evalinv(self, x):
-        n = self._get_interval(x, self.pintervals)
+    def evalinv(self, xvalue:int) -> float:
+        n = self._get_interval(xvalue, self.pintervals)
         if n is not None:
             tmin, tmax = self.intervals[n]
 
@@ -78,16 +82,17 @@ class PPolyInvertible(si.PPoly):
             xmin = self.eval_poly(tmin, coeffs, tbreak)
             xmax = self.eval_poly(tmax, coeffs, tbreak)
 
-            if abs(x - xmin) < 1e-12:
+            if abs(xvalue - xmin) < 1e-12:
                 return tmin
 
-            elif abs(x - xmax) < 1e-12:
+            elif abs(xvalue - xmax) < 1e-12:
                 return tmax
 
-            if x < xmin or x > xmax:
-                # x may be out of interval if C0 continuity isn't kept
+            if xvalue < xmin or xvalue > xmax:
+                # xvalue may be out of interval if C0 continuity isn't kept
                 return
 
-            t = brentq(partial(self._guess_error, coeffs=coeffs, tbreak=tbreak, xvalue=x), tmin, tmax)
+            guess_error = partial(self._guess_error, coeffs=coeffs, tbreak=tbreak, xvalue=xvalue)
+            t = brentq(guess_error, tmin, tmax)
 
             return t

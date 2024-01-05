@@ -2,7 +2,6 @@
 import requests, json
 import numpy as np
 
-
 from .parametric_spline import ParametricUnivariateSpline
 
 
