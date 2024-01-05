@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "splinecloud-scipy"
-version = "0.0.6"
+version = "1.0.0"
 description = "A SplineCloud client based on SciPy."
 readme = "README.md"
 authors = [{ name = "Vadym Pasko", email = "vadym@splinecloud.com" }]
