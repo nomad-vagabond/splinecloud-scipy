@@ -6,9 +6,11 @@ The client library is based on SciPy and allows to load data and curves from Spl
 
 ## Example of loading spline curve
 
+<img src="/docs/img/curve_api_link.png?raw=true" width=60% alt="SplineCloud curve">
+
 ```python
 from splinecloud_scipy import load_spline
-curve_id = 'spl_K5t56P5bormJ' # curve id can be taken from the SplineCloud
+curve_id = 'spl_K5t56P5bormJ' # take curve ID from the 'API link' dropdown at SplineCloud
 spline = load_spline(curve_id)
 ```
 
@@ -25,7 +27,7 @@ plt.plot(X,Y)
 plt.show()
 ```
 
-![Spline curve](/docs/curve.png?raw=true)
+![Spline curve](/docs/img/curve.png?raw=true)
 
 ## Example of loading data in your code
 
@@ -56,4 +58,4 @@ array([[5.0000e-01, 6.7600e+00, 3.8500e+02, 1.0871e+02, 3.5420e+00],
        [1.0000e+00, 2.5060e+01, 8.0700e+02, 3.8555e+02, 2.0930e+00]])
 ```
 
-These examples are available as notebooks in the 'examples' folder
+These examples are available as notebooks in the project's 'examples' folder.
