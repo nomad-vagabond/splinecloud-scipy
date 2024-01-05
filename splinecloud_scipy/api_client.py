@@ -56,11 +56,7 @@ def load_spline(curve_id_or_url):
 
     curve_params = curve['spline']
     t = np.array(curve_params['t'])
-    c = np.array(curve_params['c'])
-
-    # TODO: add support for weights
-    # w = curve_params['w']
-    
+    c = np.array(curve_params['c'])    
     tcck = t, c[:, 0], c[:, 1], curve_params['k']
 
     return ParametricUnivariateSpline.from_tcck(tcck)

@@ -59,3 +59,7 @@ array([[5.0000e-01, 6.7600e+00, 3.8500e+02, 1.0871e+02, 3.5420e+00],
 ```
 
 These examples are available as notebooks in the project's 'examples' folder.
+
+## Important
+
+This library supports BSpline geometry but does not support weighted BSplines (NURBS). If you adjust the weights of the curve control points use another client, that supports NURBS (a link will be provided here soon).
