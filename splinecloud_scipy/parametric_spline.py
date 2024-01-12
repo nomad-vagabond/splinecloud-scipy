@@ -1,19 +1,13 @@
-from typing import Union
+import math
+from typing import Union, Sequence
 import numpy as np
 import scipy.interpolate as si
 
 from .piecewise_polynomial import PPolyInvertible
 
 
-_error_msg = {
-
-    1: 'Parameter t must be a list or an array that represents knot Vector1D.',
-
-    2: 'Method parameter must be one of: "interp", "smooth", "lsq".'
-
-}
-
 Vector1D = Union[list[float], np.ndarray]
+Vector2D = Sequence[Sequence[float]]
 
 
 class ParametricUnivariateSpline:
@@ -85,3 +79,25 @@ class ParametricUnivariateSpline:
         else:
             t = self.spline_x.ppoly.evalinv(x)
             return float(self.spline_y.ppoly(t))
+
+    def fit_accuracy(self, points:Vector2D, weights=None, method="RMSE") -> float:
+        pnum = len(points)
+        if weights is None:
+            weights = np.ones(pnum)
+       
+        x_vals, y_vals = np.array(points).T
+        y_evaluated = self.eval(x_vals)
+        
+        if method in ["RMSE", "MSE"]:
+            residuals = [(weights[i] * (y_vals[i] - y_evaluated[i]))**2 for i in range(pnum)]
+        elif method == "MAE":
+            residuals = [weights[i] * abs(y_vals[i] - y_evaluated[i]) for i in range(pnum)]
+        else:
+            raise ValueError(f"Invalid method: {method}. Should be one of 'RMSE', 'MSE', or 'MAE'")
+
+        if method == "RMSE":
+            error = math.sqrt(sum(residuals)/pnum)
+        else:
+            error = sum(residuals)/pnum
+
+        return error
