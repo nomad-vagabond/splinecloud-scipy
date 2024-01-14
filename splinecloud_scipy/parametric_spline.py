@@ -81,7 +81,7 @@ class ParametricUnivariateSpline:
             weights = np.ones(pnum)
        
         x_vals, y_vals = np.array(points).T
-        y_evaluated = self.eval(x_vals)
+        y_evaluated = self.eval(x_vals, extrapolate=True)
         
         if method in ["RMSE", "MSE"]:
             residuals = [(weights[i] * (y_vals[i] - y_evaluated[i]))**2 for i in range(pnum)]
