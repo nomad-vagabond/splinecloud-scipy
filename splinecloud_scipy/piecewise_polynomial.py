@@ -95,6 +95,9 @@ class PPolyInvertible(si.PPoly):
                 return
 
             t_filter = [ts for ts in t_sol if ts < 0]
+            if len(t_filter) == 0:
+                return
+
             return max(t_filter)
 
         elif xvalue > self.pintervals[-1][1]: # extrapolate right
@@ -106,6 +109,9 @@ class PPolyInvertible(si.PPoly):
                 return
 
             t_filter = [ts for ts in t_sol if ts > 1]
+            if len(t_filter) == 0:
+                return
+
             return min(t_filter)
 
         xmin = self.eval_poly(tmin, coeffs, tbreak)
