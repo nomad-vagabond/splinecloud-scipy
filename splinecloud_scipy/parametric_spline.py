@@ -68,16 +68,16 @@ class ParametricUnivariateSpline:
         self.spline_y.tck = tck_y
 
     def _build_ppolyrep(self):
-        self.spline_x.ppoly = PPolyInvertible.from_splinefunc(self.spline_x)
-        self.spline_y.ppoly = PPolyInvertible.from_splinefunc(self.spline_y)
+        self.spline_x.ppoly = PPolyInvertible.from_splinefunc(self.spline_x, extrapolate=True)
+        self.spline_y.ppoly = PPolyInvertible.from_splinefunc(self.spline_y, extrapolate=True)
 
-    def eval(self, x:Union[float, Vector1D]):
+    def eval(self, x:Union[float, Vector1D], extrapolate=False):
         if hasattr(x, '__iter__'):
-            t = np.array([self.spline_x.ppoly.evalinv(xi) for xi in x])
+            t = np.array([self.spline_x.ppoly.evalinv(xi, extrapolate=extrapolate) for xi in x])
             return self.spline_y.ppoly(t)
         
         else:
-            t = self.spline_x.ppoly.evalinv(x)
+            t = self.spline_x.ppoly.evalinv(x, extrapolate=extrapolate)
             return float(self.spline_y.ppoly(t))
 
     def fit_accuracy(self, points:Vector2D, weights=None, method="RMSE") -> float:

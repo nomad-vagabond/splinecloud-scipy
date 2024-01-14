@@ -1,5 +1,6 @@
 from functools import partial
 from typing import Sequence
+import math
 
 import numpy as np
 import scipy.interpolate as si
@@ -16,15 +17,15 @@ class PPolyInvertible(si.PPoly):
     @classmethod
     def construct_fast(cls, c, x, extrapolate=None, axis=0):
         self = super(PPolyInvertible, cls).construct_fast(c, x, extrapolate=extrapolate, axis=axis)
-        
+
         self.k = len(self.c) - 1
         self.powers = np.arange(self.k, -1, -1)
         self.intervals = self._form_intervals(self.x)
         return self
 
     @classmethod
-    def from_splinefunc(cls, spline):
-        self = cls.from_spline(spline.tck)
+    def from_splinefunc(cls, spline, extrapolate=None):
+        self = cls.from_spline(spline.tck, extrapolate=extrapolate)
         self.project_intervals(spline)
         
         return self
@@ -41,6 +42,11 @@ class PPolyInvertible(si.PPoly):
         self.pintervals = self._form_intervals(breaks)
 
     def _get_interval(self, xvalue:float, intervals:Vector2D) -> int:
+        if xvalue < intervals[0][0]:
+            return 0
+        elif xvalue > intervals[-1][1]:
+            return len(intervals) - 1
+
         i = 0
         for interval in intervals:
             if xvalue >= interval[0] and xvalue < interval[1]:
@@ -71,28 +77,54 @@ class PPolyInvertible(si.PPoly):
 
         return error
 
-    def evalinv(self, xvalue:int) -> float:
+    def evalinv(self, xvalue:int, extrapolate=False) -> float:
         n = self._get_interval(xvalue, self.pintervals)
-        if n is not None:
-            tmin, tmax = self.intervals[n]
+        if n is None:
+            return
 
-            coeffs = self.c.T[n + self.k]
-            tbreak = self.x[n + self.k]
+        tmin, tmax = self.intervals[n]
+        coeffs = self.c.T[n + self.k]
+        tbreak = self.x[n + self.k]
 
-            xmin = self.eval_poly(tmin, coeffs, tbreak)
-            xmax = self.eval_poly(tmax, coeffs, tbreak)
-
-            if abs(xvalue - xmin) < 1e-12:
-                return tmin
-
-            elif abs(xvalue - xmax) < 1e-12:
-                return tmax
-
-            if xvalue < xmin or xvalue > xmax:
-                # xvalue may be out of interval if C0 continuity isn't kept
+        if xvalue < self.pintervals[0][0]: # extrapolate left
+            if not extrapolate:
                 return
 
-            guess_error = partial(self._guess_error, coeffs=coeffs, tbreak=tbreak, xvalue=xvalue)
-            t = brentq(guess_error, tmin, tmax)
+            t_sol = self.solve(xvalue, extrapolate=True)
+            if len(t_sol) == 0:
+                return
 
+            t_filter = [ts for ts in t_sol if ts < 0]
+            return max(t_filter)
+
+        elif xvalue > self.pintervals[-1][1]: # extrapolate right
+            if not extrapolate:
+                return
+
+            t_sol = self.solve(xvalue, extrapolate=True)
+            if len(t_sol) == 0:
+                return
+
+            t_filter = [ts for ts in t_sol if ts > 1]
+            return min(t_filter)
+
+        xmin = self.eval_poly(tmin, coeffs, tbreak)
+        xmax = self.eval_poly(tmax, coeffs, tbreak)
+
+        if abs(xvalue - xmin) < 1e-12:
+            return tmin
+
+        elif abs(xvalue - xmax) < 1e-12:
+            return tmax
+
+        if (xvalue < xmin or xvalue > xmax):
+            # xvalue may be out of interval if C0 continuity isn't kept
+            return
+
+        guess_error = partial(self._guess_error, coeffs=coeffs, tbreak=tbreak, xvalue=xvalue)
+        try:
+            t = brentq(guess_error, tmin, tmax)
+        except Exception as ex:
+            if not extrapolate: raise ex               
+        else:
             return t
