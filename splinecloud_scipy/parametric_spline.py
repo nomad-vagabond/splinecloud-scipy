@@ -69,11 +69,11 @@ class ParametricUnivariateSpline:
     def eval(self, x:Union[float, Vector1D], extrapolate=False):
         if hasattr(x, '__iter__'):
             t = np.array([self.spline_x.ppoly.evalinv(xi, extrapolate=extrapolate) for xi in x])
-            return self.spline_y.ppoly(t)
+            return self.spline_y.ppoly(t, extrapolate=extrapolate)
         
         else:
             t = self.spline_x.ppoly.evalinv(x, extrapolate=extrapolate)
-            return float(self.spline_y.ppoly(t))
+            return float(self.spline_y.ppoly(t, extrapolate=extrapolate))
 
     def fit_accuracy(self, points:Vector2D, weights=None, method="RMSE") -> float:
         pnum = len(points)
