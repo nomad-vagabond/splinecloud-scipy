@@ -12,8 +12,7 @@ Vector2D = Sequence[Sequence[float]]
 
 class ParametricUnivariateSpline:
 
-    @classmethod
-    def from_tcck(cls, tcck: Union[tuple, list]):
+    def __init__(self, tcck: Union[tuple, list]):
         """
         Construct a parametric spline object from tcck - tuple or list of BSpline parameters
 
@@ -27,8 +26,6 @@ class ParametricUnivariateSpline:
         --------
         ParametricUnivariateSpline
         """
-        self = cls.__new__(cls)
-
         t, cx, cy, k = tcck
         self.k = k
         self.knots = np.array(t)
@@ -38,8 +35,6 @@ class ParametricUnivariateSpline:
         
         self._build_splines()
         self._build_ppolyrep()
-        
-        return self
 
     def __call__(self, tpoints:Union[float, Vector1D]):
         x_points = self.spline_x(tpoints)
