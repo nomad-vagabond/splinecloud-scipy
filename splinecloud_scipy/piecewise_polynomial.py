@@ -86,7 +86,16 @@ class PPolyInvertible(si.PPoly):
         coeffs = self.c.T[n + self.k]
         tbreak = self.x[n + self.k]
 
-        if xvalue < self.pintervals[0][0]: # extrapolate left
+        x_start = self.pintervals[0][0]
+        x_end = self.pintervals[-1][1]
+
+        if abs(xvalue - x_start) < 1e-12:
+            return tmin
+
+        elif abs(xvalue - x_end) < 1e-12:
+            return tmax
+
+        if xvalue < x_start: # extrapolate left
             if not extrapolate:
                 return
 
@@ -100,7 +109,7 @@ class PPolyInvertible(si.PPoly):
 
             return max(t_filter)
 
-        elif xvalue > self.pintervals[-1][1]: # extrapolate right
+        elif xvalue > x_end: # extrapolate right
             if not extrapolate:
                 return
 
