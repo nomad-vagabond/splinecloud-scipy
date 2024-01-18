@@ -10,6 +10,7 @@ The client library is based on [SciPy](https://scipy.org/) and allows to load da
 
 ```python
 from splinecloud_scipy import load_spline
+
 curve_id = 'spl_K5t56P5bormJ' # take curve ID from the 'API link' dropdown at SplineCloud
 spline = load_spline(curve_id)
 ```
@@ -24,10 +25,35 @@ X = np.linspace(0, 20, 100)
 Y = [spline.eval(x) for x in X]
 
 plt.plot(X,Y)
+plt.grid()
 plt.show()
 ```
 
 ![Spline curve](/docs/img/curve.png?raw=true)
+
+## Load data fitted by spline and evaluate fit accuracy
+
+```python
+columns, table = spline.load_data()
+x_data, y_data = table.T
+
+plt.plot(X,Y)
+plt.plot(x_data, y_data, 'o', color="grey")
+plt.grid()
+plt.xlabel(columns[0])
+plt.ylabel(columns[1])
+plt.show()
+```
+
+![Spline curve](/docs/img/curve_points.png?raw=true)
+
+```python
+RMSE = spline.fit_accuracy(table, method="RMSE")
+print(RMSE)
+
+0.011307453345329156
+```
+
 
 ## Example of loading data in your code
 
