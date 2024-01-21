@@ -4,6 +4,12 @@ A Python client for [SplineCloud API](https://splinecloud.com/api/docs/)
 
 The client library is based on [SciPy](https://scipy.org/) and allows to load data and curves from [SplineCloud](https://splinecloud.com/) into your code. Once loaded spline curves can be easily evaluated.
 
+## Installation
+
+```
+pip install splinecloud-scipy
+```
+
 ## Example of loading spline curve
 
 <img src="/docs/img/curve_api_link.png?raw=true" width=80% alt="SplineCloud curve">
