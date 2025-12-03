@@ -22,7 +22,7 @@ def load_subset(subset_id_or_url):
         subset_id = url_split[-1]
         if "sbt_" not in subset_id or len(subset_id) != 16:
             raise ValueError("Wrong subset id was specified")
-        url = SPLINECLOUD_API_URL+"/subsets/{}".format(subset_id)
+        url = SPLINECLOUD_API_URL+"/subsets/{}/".format(subset_id)
     
     response = requests.get(url)
     subset = json.loads(response.content)['table']
@@ -48,7 +48,7 @@ def load_spline(curve_id_or_url):
         curve_id = url_split[-1]
         if "spl_" not in curve_id or len(curve_id) != 16:
             raise ValueError("Wrong curve id was specified")
-        url = SPLINECLOUD_API_URL+"/curves/{}".format(curve_id)
+        url = SPLINECLOUD_API_URL+"/curves/{}/".format(curve_id)
 
     response = requests.get(url)
     curve = json.loads(response.content)
