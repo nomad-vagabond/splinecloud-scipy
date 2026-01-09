@@ -859,6 +859,43 @@ class TestParametricUnivariateSplineDegree4(unittest.TestCase):
         self.assertTrue(np.allclose(y, y_))
 
 
+class TestParametricUnivariateSplineEvalLogScale(unittest.TestCase):
+
+    def test_eval_log_y(self):
+        t = [0, 0, 0, 0, 0.1654, 0.2535, 0.34, 0.4281, 0.5124, 0.5974, 0.6847, 0.7759, 0.8547, 1, 1, 1, 1]
+        cx = [1900.49, 1906.88, 1916.68, 1929.82, 1939.97, 1949.98, 1959.93, 1969.84, 1980.03, 1989.97, 2002.16, 2010.82, 2016.44]
+        cy = [1.84, 2.14, 1.44, 2.58, 2.1, 2.2, 2.9, 2.95, 2.78, 3.41, 4.35, 3.9, 4.3]
+        k = 3
+
+        tcck = t, cx, cy, k
+        spline = ParametricUnivariateSpline(tcck, log_x=False, log_y=True)
+
+        x = np.linspace(1900, 2020, 20)
+        y = spline.eval(x, extrapolate=True)
+
+        y_round = [65., 88., 72., 73., 146., 234., 176., 148., 211., 448., 763., 824., 752., 961., 2121., 5837., 11222., 11862., 14263., 45368.]
+        
+        self.assertEqual(len(y), len(y_round))
+        self.assertTrue(np.allclose(np.round(y), y_round))
+
+    def test_eval_log_x(self):
+        t = [0, 0, 0, 0, 0.31, 0.46, 1, 1, 1, 1]
+        cx = [-2.96, -2.56, -1.95, -0.63, 0.29, 0.99]
+        cy = [0.08, 0.12, 0.27, 0.88, 0.98, 0.99]
+        k = 3
+
+        tcck = t, cx, cy, k
+        spline = ParametricUnivariateSpline(tcck, log_x=True, log_y=False)
+
+        x = np.power(10, np.linspace(1, 5, 20))
+        y = spline.eval(x, extrapolate=True)
+
+        y_round = [0.99, 0.99, 0.99, 0.98, 0.98, 0.97, 0.96, 0.95, 0.95, 0.94, 0.94, 0.95, 0.96, 0.98, 1.01, 1.05, 1.11, 1.18, 1.28, 1.4]
+        
+        self.assertEqual(len(y), len(y_round))
+        self.assertTrue(np.allclose(np.round(y, 2), y_round))
+
+
 if __name__ == '__main__':
     unittest.main()
 

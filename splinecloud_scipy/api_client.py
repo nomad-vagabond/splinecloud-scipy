@@ -58,7 +58,10 @@ def load_spline(curve_id_or_url):
     c = np.array(curve_params['c'])    
     tcck = t, c[:, 0], c[:, 1], curve_params['k']
 
-    spline = ParametricUnivariateSpline(tcck)
+    log_x = curve['scale_x'] == "Logarithmic"
+    log_y = curve['scale_y'] == "Logarithmic"
+
+    spline = ParametricUnivariateSpline(tcck, log_x=log_x, log_y=log_y)
     spline.load_data = lambda: load_subset(curve['subset_uid'])
 
     return spline

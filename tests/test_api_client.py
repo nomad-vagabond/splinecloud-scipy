@@ -67,7 +67,9 @@ class APIClientTests(unittest.TestCase):
                     "xlabel": "X", 
                     "ylabel": "Y" 
                 }
-            }
+            },
+            "scale_x": "Linear",
+            "scale_y": "Linear"
         }
 
         responses.add(responses.GET, curve_url, json=spline_response, status=200)

@@ -12,7 +12,7 @@ Vector2D = Sequence[Sequence[float]]
 
 class ParametricUnivariateSpline:
 
-    def __init__(self, tcck: Union[tuple, list]):
+    def __init__(self, tcck: Union[tuple, list], log_x=False, log_y=False):
         """
         Construct a parametric spline object from tcck - tuple or list of BSpline parameters
 
@@ -32,6 +32,9 @@ class ParametricUnivariateSpline:
         self.knots_norm = self._normalize_knotvector()
         self.coeffs_x = np.array(cx)
         self.coeffs_y = np.array(cy)
+
+        self.log_x = log_x
+        self.log_y = log_y
         
         self._build_splines()
         self._build_ppolyrep()
@@ -68,12 +71,22 @@ class ParametricUnivariateSpline:
 
     def eval(self, x:Union[float, Vector1D], extrapolate=False):
         if hasattr(x, '__iter__'):
+            x = np.log10(x) if self.log_x else x
             t = np.array([self.spline_x.ppoly.evalinv(xi, extrapolate=extrapolate) for xi in x])
-            return self.spline_y.ppoly(t, extrapolate=extrapolate)
+            y = self.spline_y.ppoly(t, extrapolate=extrapolate)
+
+            if self.log_y:
+                y = np.power(10, y)
         
         else:
+            x = math.log10(x) if self.log_x else x
             t = self.spline_x.ppoly.evalinv(x, extrapolate=extrapolate)
-            return float(self.spline_y.ppoly(t, extrapolate=extrapolate))
+            y = float(self.spline_y.ppoly(t, extrapolate=extrapolate))
+
+            if self.log_y:
+                y = 10**y
+
+        return y
 
     def fit_accuracy(self, points:Vector2D, weights=None, method="RMSE") -> float:
         pnum = len(points)
