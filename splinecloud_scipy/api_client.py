@@ -3,6 +3,7 @@ import requests, json
 import numpy as np
 
 from .parametric_spline import ParametricUnivariateSpline
+from .parametric_spline_surface import ParametricBivariateSpline
 
 
 SPLINECLOUD_API_URL = "https://splinecloud.com/api"
@@ -65,4 +66,49 @@ def load_spline(curve_id_or_url):
     spline.load_data = lambda: load_subset(curve['subset_uid'])
 
     return spline
-        
+
+
+def load_spline_surface(surface_id_or_url):
+    """
+    Fetch a spline surface from the SplineCloud API and return a
+    ParametricSplineSurface instance.
+
+    Accepts either a full URL or a bare surface id (prefix ``srf_``).
+    """
+    url_split = surface_id_or_url.split("/")
+    if len(url_split) > 1:
+        url = surface_id_or_url
+    else:
+        surface_id = url_split[-1]
+        if "srf_" not in surface_id or len(surface_id) != 16:
+            raise ValueError("Wrong surface id was specified")
+        url = SPLINECLOUD_API_URL + "/surfaces/{}/".format(surface_id)
+
+    response = requests.get(url)
+    response.raise_for_status()
+    data = json.loads(response.content)
+
+    sp = data["spline"]
+    cp = np.array(sp["cp"], dtype=float)   # (nu, nv, 3)
+    w  = np.array(sp["w"],  dtype=float)   # (nu, nv)
+    tu = np.array(sp["tu"], dtype=float)
+    tv = np.array(sp["tv"], dtype=float)
+    ku = int(sp["ku"])
+    kv = int(sp["kv"])
+
+    log_x = data.get("scale_x") == "Logarithmic"
+    log_y = data.get("scale_y") == "Logarithmic"
+    log_z = data.get("scale_z") == "Logarithmic"
+
+    flip_yz = data.get("surface_type") == "lofted"
+
+    surface = ParametricBivariateSpline(
+        tu, tv, cp, ku, kv, w=w,
+        log_x=log_x, log_y=log_y, log_z=log_z,
+        flip_yz=flip_yz,
+    )
+    # Attach subset loader lazily, mirroring the curve API
+    surface.subset_uids = data.get("subset_uids", [])
+    surface.load_data = lambda: [load_subset(uid) for uid in surface.subset_uids]
+   
+    return surface
