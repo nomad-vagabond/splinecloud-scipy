@@ -71,7 +71,7 @@ def load_spline(curve_id_or_url):
 def load_spline_surface(surface_id_or_url):
     """
     Fetch a spline surface from the SplineCloud API and return a
-    ParametricSplineSurface instance.
+    ParametricBivariateSpline instance.
 
     Accepts either a full URL or a bare surface id (prefix ``srf_``).
     """

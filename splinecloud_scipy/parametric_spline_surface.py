@@ -127,11 +127,9 @@ class ParametricBivariateSpline:
         """
         # --- 1. Coarse grid search for initial guess -----------------------
         # Sample the surface on a grid to find the (u,v) cell closest to (x,y)
-        u_min, u_max = self.tu[self.ku], self.tu[-(self.ku + 1)]
-        v_min, v_max = self.tv[self.kv], self.tv[-(self.kv + 1)]
 
-        u_grid = np.linspace(u_min, u_max, grid_size)
-        v_grid = np.linspace(v_min, v_max, grid_size)
+        u_grid = np.linspace(0, 1, grid_size)
+        v_grid = np.linspace(0, 1, grid_size)
 
         # bisplev with grid=True returns (grid_size, grid_size) arrays
         x_grid = bisplev(u_grid, v_grid, self._tck_x)
@@ -171,13 +169,10 @@ class ParametricBivariateSpline:
             v += delta[1]
 
             # Clamp to valid domain after each step
-            u = np.clip(u, u_min, u_max)
-            v = np.clip(v, v_min, v_max)
+            u = np.clip(u, 0, 1)
+            v = np.clip(v, 0, 1)
         else:
-            raise ValueError(
-                f"Newton's method did not converge for (x={x}, y={y}). "
-                "Point may be outside the surface domain."
-            )
+            return None
 
         z = float(bisplev(u, v, self._tck_z))
         if self.log_z:
@@ -277,7 +272,7 @@ class ParametricBivariateSpline:
 
         # Extract diagonal — bisplev returns a grid, we want point-wise
         dist2 = np.diag(((cx - x) ** 2 + (cy - y) ** 2))
-        order  = np.argsort(dist2)
+        order = np.argsort(dist2)
 
         return [(u_cands[k], v_cands[k]) for k in order]
 
@@ -304,8 +299,6 @@ class ParametricBivariateSpline:
         -------
         z : float
         """
-        u_min, u_max = self.tu[self.ku],  self.tu[-(self.ku + 1)]
-        v_min, v_max = self.tv[self.kv],  self.tv[-(self.kv + 1)]
 
         candidates = self._find_candidate_cells(x, y)
 
@@ -326,8 +319,7 @@ class ParametricBivariateSpline:
                 dydu = float(bisplev(u, v, self._tck_y, dx=1, dy=0))
                 dydv = float(bisplev(u, v, self._tck_y, dx=0, dy=1))
 
-                J = np.array([[dxdu, dxdv],
-                            [dydu, dydv]])
+                J = np.array([[dxdu, dxdv], [dydu, dydv]])
                 F = np.array([fx, fy])
 
                 try:
@@ -335,14 +327,11 @@ class ParametricBivariateSpline:
                 except np.linalg.LinAlgError:
                     break  # singular — try next candidate
 
-                u = np.clip(u + delta[0], u_min, u_max)
-                v = np.clip(v + delta[1], v_min, v_max)
+                u = np.clip(u + delta[0], 0, 1)
+                v = np.clip(v + delta[1], 0, 1)
 
             if converged:
                 z = float(bisplev(u, v, self._tck_z))
                 return np.exp(z) if self.log_z else z
 
-        raise ValueError(
-            f"eval_using_2D_map did not converge for (x={x}, y={y}). "
-            "Point may be outside the surface domain."
-        )
+        return None
