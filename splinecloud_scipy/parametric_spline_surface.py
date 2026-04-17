@@ -59,6 +59,9 @@ class ParametricBivariateSpline:
         self._tck_y = (self.tu, self.tv, cp[:, :, iy].ravel(), self.ku, self.kv)
         self._tck_z = (self.tu, self.tv, cp[:, :, iz].ravel(), self.ku, self.kv)
 
+        self._build_interval_map()
+        self._build_search_grid()
+
     def __call__(self, u, v, grid=False):
         """
         Evaluate the surface at parameter coordinates (u, v).
@@ -180,6 +183,131 @@ class ParametricBivariateSpline:
         
         return z
 
+    def _build_search_grid(self):
+        """
+        Pre-evaluate the surface at the centres of all knot spans.
+        Called once at construction; result cached for all eval() calls.
+
+        Stores
+        ------
+        _search_u : (Mu,)   u midpoints of each unique u span
+        _search_v : (Mv,)   v midpoints of each unique v span
+        _search_x : (Mu, Mv) physical x at each (u_mid, v_mid)
+        _search_y : (Mu, Mv) physical y at each (u_mid, v_mid)
+        """
+        tu_unique = np.unique(self.tu)
+        tv_unique = np.unique(self.tv)
+
+        self._search_u = (tu_unique[:-1] + tu_unique[1:]) / 2   # (Mu,)
+        self._search_v = (tv_unique[:-1] + tv_unique[1:]) / 2   # (Mv,)
+
+        # bisplev returns (Mu, Mv) grid by default
+        self._search_x = bisplev(self._search_u, self._search_v, self._tck_x)
+        self._search_y = bisplev(self._search_u, self._search_v, self._tck_y)
+
+    def eval_grid(self, x_vals, y_vals, tol=1e-10, max_iter=50):
+        """
+        Evaluate z = S_z(u*, v*) for a regular grid of (x, y) values,
+        using vectorized Newton's method across all points simultaneously.
+
+        Parameters
+        ----------
+        x_vals : 1-D array of shape (Nx,)
+        y_vals : 1-D array of shape (Ny,)
+
+        Returns
+        -------
+        X, Y, Z : 2-D arrays of shape (Nx, Ny)
+        """
+        X, Y = np.meshgrid(x_vals, y_vals, indexing='ij')
+        shape = X.shape
+        x_flat = X.ravel()
+        y_flat = Y.ravel()
+        n = len(x_flat)
+
+        # --- Vectorized initial guess from precomputed search grid --------
+        # _search_x/_search_y are (Mu, Mv) grids; flatten for broadcasting
+        sx = self._search_x.ravel()          # (Mu*Mv,)
+        sy = self._search_y.ravel()
+        su = np.repeat(self._search_u, len(self._search_v))
+        sv = np.tile(self._search_v, len(self._search_u))
+
+        # For each target point find nearest search-grid cell — (n, Mu*Mv)
+        dist2 = (sx[None, :] - x_flat[:, None])**2 + \
+                (sy[None, :] - y_flat[:, None])**2   # (n, Mu*Mv)
+        best = np.argmin(dist2, axis=1)              # (n,)
+        u = su[best].copy()
+        v = sv[best].copy()
+
+        # --- Vectorized Newton --------------------------------------------
+        # Track which points have not yet converged
+        active = np.ones(n, dtype=bool)
+
+        for _ in range(max_iter):
+            if not active.any():
+                break
+
+            ua, va = u[active], v[active]
+            xa, ya = x_flat[active], y_flat[active]
+
+            # Residuals — one bisplev call per coordinate over active points
+            fx = np.array([bisplev(ui, vi, self._tck_x)
+                        for ui, vi in zip(ua, va)]) - xa
+            fy = np.array([bisplev(ui, vi, self._tck_y)
+                        for ui, vi in zip(ua, va)]) - ya
+
+            # Mark converged
+            converged = (np.abs(fx) < tol) & (np.abs(fy) < tol)
+            active[np.where(active)[0][converged]] = False
+
+            still = ~converged
+            if not still.any():
+                break
+
+            ua, va = ua[still], va[still]
+            fx, fy = fx[still], fy[still]
+            xa, ya = xa[still], ya[still]
+
+            # Jacobian entries
+            dxdu = np.array([bisplev(ui, vi, self._tck_x, dx=1, dy=0)
+                            for ui, vi in zip(ua, va)])
+            dxdv = np.array([bisplev(ui, vi, self._tck_x, dx=0, dy=1)
+                            for ui, vi in zip(ua, va)])
+            dydu = np.array([bisplev(ui, vi, self._tck_y, dx=1, dy=0)
+                            for ui, vi in zip(ua, va)])
+            dydv = np.array([bisplev(ui, vi, self._tck_y, dx=0, dy=1)
+                            for ui, vi in zip(ua, va)])
+
+            # Batch 2x2 solve: det(J) and Cramer's rule — avoids per-point linalg.solve
+            det = dxdu * dydv - dxdv * dydu
+            safe = np.abs(det) > 1e-14
+            du = np.where(safe, ( dydv * (-fx) - dxdv * (-fy)) / det, 0.0)
+            dv = np.where(safe, (-dydu * (-fx) + dxdu * (-fy)) / det, 0.0)
+
+            idx = np.where(active)[0]
+            u[idx] = np.clip(u[idx] + du, 0, 1)
+            v[idx] = np.clip(v[idx] + dv, 0, 1)
+
+        # --- Final evaluation ---------------------------------------------
+        Z_flat = np.array([bisplev(ui, vi, self._tck_z)
+                        for ui, vi in zip(u, v)], dtype=float)
+        if self.log_z:
+            Z_flat = np.exp(Z_flat)
+
+        Z = Z_flat.reshape(shape)
+        
+        return X, Y, Z
+
+    def eval_or_grid(self, x_vals, y_vals, threshold=100):
+        """Route to eval_grid for large grids, scalar eval for small ones."""
+        if len(x_vals) * len(y_vals) >= threshold:
+            return self.eval_grid(x_vals, y_vals)
+        else:
+            X, Y = np.meshgrid(x_vals, y_vals, indexing='ij')
+            Z = np.array([[self.eval(X[i,j], Y[i,j]) 
+                        for j in range(Y.shape[1])] 
+                        for i in range(X.shape[0])])
+            return X, Y, Z
 
     def _build_interval_map(self):
         """
@@ -241,7 +369,6 @@ class ParametricBivariateSpline:
         self._imap_ymin    = ymin
         self._imap_ymax    = ymax
 
-
     def _find_candidate_cells(self, x, y):
         """
         Return (u0, v0) seed points for all knot-span cells whose physical
@@ -267,15 +394,18 @@ class ParametricBivariateSpline:
         # Sort matching cells by distance from cell centre to target
         u_cands = self._imap_u_mid[ii]
         v_cands = self._imap_v_mid[jj]
-        cx = bisplev(self._imap_u_mid[ii], self._imap_v_mid[jj], self._tck_x)
-        cy = bisplev(self._imap_u_mid[ii], self._imap_v_mid[jj], self._tck_y)
 
-        # Extract diagonal — bisplev returns a grid, we want point-wise
-        dist2 = np.diag(((cx - x) ** 2 + (cy - y) ** 2))
+        # Evaluate point-wise (not on a grid) to get the physical
+        # coordinates at each candidate cell centre.
+        cx = np.array([float(bisplev(u_cands[k], v_cands[k], self._tck_x))
+                       for k in range(len(u_cands))])
+        cy = np.array([float(bisplev(u_cands[k], v_cands[k], self._tck_y))
+                       for k in range(len(u_cands))])
+
+        dist2 = (cx - x) ** 2 + (cy - y) ** 2
         order = np.argsort(dist2)
 
         return [(u_cands[k], v_cands[k]) for k in order]
-
 
     def eval_using_2D_map(self, x, y, tol=1e-10, max_iter=50):
         """
