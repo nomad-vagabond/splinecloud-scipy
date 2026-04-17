@@ -114,141 +114,142 @@ class ParametricBivariateSpline:
         self._search_x = bisplev(self._search_u, self._search_v, self._tck_x)
         self._search_y = bisplev(self._search_u, self._search_v, self._tck_y)
 
-    def eval(self, x, y, tol=1e-10, max_iter=50, grid_size=20, threshold=100):
-        """
-        Evaluate z = S_z(u*, v*) where S_x(u*, v*) = x and S_y(u*, v*) = y.
-        Handles both scalar and vector inputs for x and y.
-
-        Parameters
-        ----------
-        x, y : float or array-like
-            Target coordinates in physical space.
-        tol : float
-            Convergence tolerance on ||F(u,v)||.
-        max_iter : int
-            Maximum Newton iterations.
-        grid_size : int
-            Resolution of the coarse grid used for the initial guess (for scalars).
-        threshold : int
-            The total number of points above which vectorized eval_grid is used.
-
-        Returns
-        -------
-        result : float or tuple (X, Y, Z)
-            If input is scalar, returns z (float).
-            If input is vector, returns (X, Y, Z) meshgrids.
-        """
+    def eval(self, x, y, tol=1e-10, max_iter=50, threshold=100, compute_gradients=False):
         x_is_iter = hasattr(x, '__iter__')
         y_is_iter = hasattr(y, '__iter__')
 
         if not x_is_iter and not y_is_iter:
-            return self.eval_point(x, y, tol=tol, max_iter=max_iter, grid_size=grid_size)
+            return self.eval_point(x, y, tol=tol, max_iter=max_iter,
+                                   compute_gradients=compute_gradients)
 
         x_vals = np.atleast_1d(x)
         y_vals = np.atleast_1d(y)
 
         if len(x_vals) * len(y_vals) >= threshold:
-            return self.eval_grid(x_vals, y_vals, tol=tol, max_iter=max_iter)
+            return self.eval_grid(x_vals, y_vals, tol=tol, max_iter=max_iter,
+                                  compute_gradients=compute_gradients)
         else:
             X, Y = np.meshgrid(x_vals, y_vals, indexing='ij')
-            Z = np.array([[self.eval_point(X[i, j], Y[i, j], tol=tol, max_iter=max_iter, grid_size=grid_size)
-                           for j in range(Y.shape[1])]
-                          for i in range(X.shape[0])])
+            Z = np.zeros_like(X)
+            if compute_gradients:
+                dZdX = np.zeros_like(X)
+                dZdY = np.zeros_like(X)
+                for i in range(X.shape[0]):
+                    for j in range(X.shape[1]):
+                        z, dzdx, dzdy = self.eval_point(
+                            X[i, j], Y[i, j], tol=tol, max_iter=max_iter, compute_gradients=True)
+                        Z[i, j] = z
+                        dZdX[i, j] = dzdx
+                        dZdY[i, j] = dzdy
+                
+                return X, Y, Z, dZdX, dZdY
+            else:
+                for i in range(X.shape[0]):
+                    for j in range(X.shape[1]):
+                        Z[i, j] = self.eval_point(X[i, j], Y[i, j], tol=tol, max_iter=max_iter)
+                return X, Y, Z
 
-            return X, Y, Z
-
-    def eval_point(self, x, y, tol=1e-10, max_iter=50, grid_size=20):
+    def eval_point(self, x, y, tol=1e-10, max_iter=50, compute_gradients=False):
         """
         Find z = S_z(u*, v*) where S_x(u*, v*) = x and S_y(u*, v*) = y.
-
-        Uses Newton's method with an analytical Jacobian (exact partial
-        derivatives from bisplev) seeded from a coarse grid search.
 
         Parameters
         ----------
         x, y : float
-            Target coordinates in physical space.
         tol : float
-            Convergence tolerance on ||F(u,v)||.
         max_iter : int
-            Maximum Newton iterations.
-        grid_size : int
-            Resolution of the coarse grid used for the initial guess.
+        compute_gradients : bool
+            If True, also return (dz/dx, dz/dy) via the implicit function theorem.
 
         Returns
         -------
-        z : float or None (if Newton's method fails to converge)
-            Interpolated z value at (x, y).
-
+        z : float, or None if Newton did not converge.
+        (dzdx, dzdy) : tuple of float, only if compute_gradients=True.
         """
-        # --- 1. Coarse grid search for initial guess -----------------------
-        # Sample the surface on a grid to find the (u,v) cell closest to (x,y)
+        # --- Initial guess from search grid ---
+        sx = self._search_x.ravel()
+        sy = self._search_y.ravel()
+        su = np.repeat(self._search_u, len(self._search_v))
+        sv = np.tile(self._search_v, len(self._search_u))
 
-        u_grid = np.linspace(0, 1, grid_size)
-        v_grid = np.linspace(0, 1, grid_size)
+        dist2 = (sx - x)**2 + (sy - y)**2
+        best  = np.argmin(dist2)
+        u, v  = su[best], sv[best]
 
-        # bisplev with grid=True returns (grid_size, grid_size) arrays
-        x_grid = bisplev(u_grid, v_grid, self._tck_x)
-        y_grid = bisplev(u_grid, v_grid, self._tck_y)
-
-        dist2 = (x_grid - x) ** 2 + (y_grid - y) ** 2
-        i0, j0 = np.unravel_index(np.argmin(dist2), dist2.shape)
-        u0, v0 = u_grid[i0], v_grid[j0]
-
-        # --- 2. Newton's method with analytical Jacobian ------------------
-        u, v = u0, v0
+        # --- Newton's method — keep final Jacobian if needed ---
+        J = None
         for _ in range(max_iter):
-            # Residual
-            fx = bisplev(u, v, self._tck_x) - x
-            fy = bisplev(u, v, self._tck_y) - y
+            fx = float(bisplev(u, v, self._tck_x)) - x
+            fy = float(bisplev(u, v, self._tck_y)) - y
 
             if abs(fx) < tol and abs(fy) < tol:
                 break
 
-            # Analytical Jacobian via bisplev derivative flags
-            # dx=1,dy=0 → ∂/∂u;  dx=0,dy=1 → ∂/∂v
-            dxdu = bisplev(u, v, self._tck_x, dx=1, dy=0)
-            dxdv = bisplev(u, v, self._tck_x, dx=0, dy=1)
-            dydu = bisplev(u, v, self._tck_y, dx=1, dy=0)
-            dydv = bisplev(u, v, self._tck_y, dx=0, dy=1)
+            dxdu = float(bisplev(u, v, self._tck_x, dx=1, dy=0))
+            dxdv = float(bisplev(u, v, self._tck_x, dx=0, dy=1))
+            dydu = float(bisplev(u, v, self._tck_y, dx=1, dy=0))
+            dydv = float(bisplev(u, v, self._tck_y, dx=0, dy=1))
 
-            # 2x2 solve:  J * delta = -F
             J = np.array([[dxdu, dxdv], [dydu, dydv]])
             F = np.array([fx, fy])
+
             try:
                 delta = np.linalg.solve(J, -F)
             except np.linalg.LinAlgError:
-                # Singular Jacobian — surface is locally degenerate at this point
                 break
 
-            u += delta[0]
-            v += delta[1]
-
-            # Clamp to valid domain after each step
-            u = np.clip(u, 0, 1)
-            v = np.clip(v, 0, 1)
+            u = np.clip(u + delta[0], 0, 1)
+            v = np.clip(v + delta[1], 0, 1)
         else:
+            if compute_gradients:
+                return None, None, None
+            
             return None
 
         z = float(bisplev(u, v, self._tck_z))
+
+        if not compute_gradients:
+            if self.log_z:
+                z = np.exp(z)
+            return z
+
+        # --- Gradients via implicit function theorem ---
+        dzdu = float(bisplev(u, v, self._tck_z, dx=1, dy=0))
+        dzdv = float(bisplev(u, v, self._tck_z, dx=0, dy=1))
+        grad_uv = np.array([dzdu, dzdv])
+
+        try:
+            grad_xy = np.linalg.solve(J, grad_uv)
+        except np.linalg.LinAlgError:
+            grad_xy = np.array([np.nan, np.nan])
+
         if self.log_z:
             z = np.exp(z)
-        
-        return z
+            grad_xy *= z
+        if self.log_x:
+            grad_xy[0] /= x
+        if self.log_y:
+            grad_xy[1] /= y
 
-    def eval_grid(self, x_vals, y_vals, tol=1e-10, max_iter=50):
+        return z, float(grad_xy[0]), float(grad_xy[1])
+
+    def eval_grid(self, x_vals, y_vals, tol=1e-10, max_iter=50, compute_gradients=False):
         """
-        Evaluate z = S_z(u*, v*) for a regular grid of (x, y) values,
-        using vectorized Newton's method across all points simultaneously.
+        Evaluate z over a regular (x, y) grid using vectorized Newton.
 
         Parameters
         ----------
         x_vals : 1-D array of shape (Nx,)
         y_vals : 1-D array of shape (Ny,)
+        tol : float
+        max_iter : int
+        compute_gradients : bool
+            If True, also return dz/dx and dz/dy grids.
 
         Returns
         -------
         X, Y, Z : 2-D arrays of shape (Nx, Ny)
+        dZdX, dZdY : 2-D arrays of shape (Nx, Ny), only if compute_gradients=True.
         """
         X, Y = np.meshgrid(x_vals, y_vals, indexing='ij')
         shape = X.shape
@@ -256,40 +257,39 @@ class ParametricBivariateSpline:
         y_flat = Y.ravel()
         n = len(x_flat)
 
-        # --- Vectorized initial guess from precomputed search grid ---
-        # _search_x/_search_y are (Mu, Mv) grids; flatten for broadcasting
-        sx = self._search_x.ravel()          # (Mu*Mv,)
+        # --- Vectorized initial guess ------------------------------------
+        sx = self._search_x.ravel()
         sy = self._search_y.ravel()
         su = np.repeat(self._search_u, len(self._search_v))
         sv = np.tile(self._search_v, len(self._search_u))
 
-        # For each target point find nearest search-grid cell — (n, Mu*Mv)
         dist2 = (sx[None, :] - x_flat[:, None])**2 + \
-                (sy[None, :] - y_flat[:, None])**2   # (n, Mu*Mv)
-        best = np.argmin(dist2, axis=1)              # (n,)
+                (sy[None, :] - y_flat[:, None])**2
+        best = np.argmin(dist2, axis=1)
         u = su[best].copy()
         v = sv[best].copy()
 
-        # --- Vectorized Newton ---
-        # Track which points have not yet converged
+        # Store final Jacobian only when gradients are needed
+        J_final = np.zeros((n, 2, 2)) if compute_gradients else None
+
+        # --- Vectorized Newton -------------------------------------------
         active = np.ones(n, dtype=bool)
 
         for _ in range(max_iter):
             if not active.any():
                 break
 
-            ua, va = u[active], v[active]
-            xa, ya = x_flat[active], y_flat[active]
+            idx = np.where(active)[0]
+            ua, va = u[idx], v[idx]
+            xa, ya = x_flat[idx], y_flat[idx]
 
-            # Residuals — one bisplev call per coordinate over active points
             fx = np.array([bisplev(ui, vi, self._tck_x)
-                          for ui, vi in zip(ua, va)]) - xa
+                        for ui, vi in zip(ua, va)]) - xa
             fy = np.array([bisplev(ui, vi, self._tck_y)
-                          for ui, vi in zip(ua, va)]) - ya
+                        for ui, vi in zip(ua, va)]) - ya
 
-            # Mark converged
             converged = (np.abs(fx) < tol) & (np.abs(fy) < tol)
-            active[np.where(active)[0][converged]] = False
+            active[idx[converged]] = False
 
             still = ~converged
             if not still.any():
@@ -297,9 +297,7 @@ class ParametricBivariateSpline:
 
             ua, va = ua[still], va[still]
             fx, fy = fx[still], fy[still]
-            xa, ya = xa[still], ya[still]
 
-            # Jacobian entries
             dxdu = np.array([bisplev(ui, vi, self._tck_x, dx=1, dy=0)
                             for ui, vi in zip(ua, va)])
             dxdv = np.array([bisplev(ui, vi, self._tck_x, dx=0, dy=1)
@@ -309,22 +307,59 @@ class ParametricBivariateSpline:
             dydv = np.array([bisplev(ui, vi, self._tck_y, dx=0, dy=1)
                             for ui, vi in zip(ua, va)])
 
-            # Batch 2x2 solve: det(J) and Cramer's rule — avoids per-point linalg.solve
+            if compute_gradients:
+                still_idx = idx[still]
+                J_final[still_idx, 0, 0] = dxdu
+                J_final[still_idx, 0, 1] = dxdv
+                J_final[still_idx, 1, 0] = dydu
+                J_final[still_idx, 1, 1] = dydv
+
             det = dxdu * dydv - dxdv * dydu
             safe = np.abs(det) > 1e-14
             du = np.where(safe, ( dydv * (-fx) - dxdv * (-fy)) / det, 0.0)
             dv = np.where(safe, (-dydu * (-fx) + dxdu * (-fy)) / det, 0.0)
 
-            idx = np.where(active)[0]
-            u[idx] = np.clip(u[idx] + du, 0, 1)
-            v[idx] = np.clip(v[idx] + dv, 0, 1)
+            u[idx[still]] = np.clip(u[idx[still]] + du, 0, 1)
+            v[idx[still]] = np.clip(v[idx[still]] + dv, 0, 1)
 
-        # --- Final evaluation ---
+        # --- Final z evaluation ------------------------------------------
         Z_flat = np.array([bisplev(ui, vi, self._tck_z)
                           for ui, vi in zip(u, v)], dtype=float)
+
+        if not compute_gradients:
+            if self.log_z:
+                Z_flat = np.exp(Z_flat)
+            
+            return X, Y, Z_flat.reshape(shape)
+
+        # --- Gradients via implicit function theorem ---------------------
+        dzdu = np.array([bisplev(ui, vi, self._tck_z, dx=1, dy=0)
+                        for ui, vi in zip(u, v)])
+        dzdv = np.array([bisplev(ui, vi, self._tck_z, dx=0, dy=1)
+                        for ui, vi in zip(u, v)])
+        grad_uv = np.stack([dzdu, dzdv], axis=1)        # (n, 2)
+
+        det = J_final[:, 0, 0] * J_final[:, 1, 1] - \
+              J_final[:, 0, 1] * J_final[:, 1, 0]
+        safe = np.abs(det) > 1e-14
+
+        dzdx = np.where(safe,
+                        ( J_final[:, 1, 1] * grad_uv[:, 0] -
+                        J_final[:, 0, 1] * grad_uv[:, 1]) / det,
+                        np.nan)
+        dzdy = np.where(safe,
+                        (-J_final[:, 1, 0] * grad_uv[:, 0] +
+                        J_final[:, 0, 0] * grad_uv[:, 1]) / det,
+                        np.nan)
+
         if self.log_z:
             Z_flat = np.exp(Z_flat)
+            dzdx *= Z_flat
+            dzdy *= Z_flat
+        if self.log_x:
+            dzdx /= x_flat
+        if self.log_y:
+            dzdy /= y_flat
 
-        Z = Z_flat.reshape(shape)
-        
-        return X, Y, Z
+        return (X, Y, Z_flat.reshape(shape),
+                dzdx.reshape(shape), dzdy.reshape(shape))
