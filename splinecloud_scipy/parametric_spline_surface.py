@@ -80,11 +80,11 @@ class ParametricBivariateSpline:
         z = bisplev(u, v, self._tck_z)
 
         if not grid and u.shape == v.shape:
-            # bisplev always returns a 2-D grid; collapse the diagonal
-            # for point-wise evaluation
-            x = x if x.ndim == 1 else np.diag(x)
-            y = y if y.ndim == 1 else np.diag(y)
-            z = z if z.ndim == 1 else np.diag(z)
+            # bisplev returns a 2-D grid if len(u)>1 and len(v)>1,
+            # but may return a scalar if both are length 1.
+            x = np.atleast_1d(x if x.ndim <= 1 else np.diag(x))
+            y = np.atleast_1d(y if y.ndim <= 1 else np.diag(y))
+            z = np.atleast_1d(z if z.ndim <= 1 else np.diag(z))
 
         if self.log_x: x = np.exp(x)
         if self.log_y: y = np.exp(y)
@@ -110,10 +110,11 @@ class ParametricBivariateSpline:
         self._search_u = (tu_unique[:-1] + tu_unique[1:]) / 2   # (Mu,)
         self._search_v = (tv_unique[:-1] + tv_unique[1:]) / 2   # (Mv,)
 
-        # bisplev returns (Mu, Mv) grid by default
-        self._search_x = bisplev(self._search_u, self._search_v, self._tck_x)
-        self._search_y = bisplev(self._search_u, self._search_v, self._tck_y)
-        self._search_z = bisplev(self._search_u, self._search_v, self._tck_z)
+        # bisplev returns (Mu, Mv) grid if Mu, Mv > 1, but may return scalar/1D if they are 1.
+        # Ensure result is always (Mu, Mv)
+        self._search_x = np.atleast_2d(bisplev(self._search_u, self._search_v, self._tck_x)).reshape(len(self._search_u), len(self._search_v))
+        self._search_y = np.atleast_2d(bisplev(self._search_u, self._search_v, self._tck_y)).reshape(len(self._search_u), len(self._search_v))
+        self._search_z = np.atleast_2d(bisplev(self._search_u, self._search_v, self._tck_z)).reshape(len(self._search_u), len(self._search_v))
 
     def _compute_boundary_point(self, x, y):
         """
