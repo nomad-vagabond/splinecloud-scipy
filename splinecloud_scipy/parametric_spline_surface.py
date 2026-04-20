@@ -282,17 +282,16 @@ class ParametricBivariateSpline:
 
         S_b, dSdu, dSdv, d2Sdu2, d2Sdv2, d2Sdudv, du, dv = self._compute_boundary_point(x, y)
 
-        x_b, y_b, z_b = S_b
-
-        x_extent = self._search_x.max() - self._search_x.min()
-        y_extent = self._search_y.max() - self._search_y.min()
-
+        J = np.array([[dSdu[0], dSdv[0]], [dSdu[1], dSdv[1]]])
         first_order  = dSdu[2] * du + dSdv[2] * dv
         second_order = 0.5 * d2Sdu2[2] * du**2 + d2Sdudv[2] * du * dv + 0.5 * d2Sdv2[2] * dv**2
 
+        x_b, y_b, z_b = S_b
         z1 = z_b + first_order
         z2 = z_b + first_order + second_order
 
+        x_extent = self._search_x.max() - self._search_x.min()
+        y_extent = self._search_y.max() - self._search_y.min()
 
         if limit_distance:
             # ----------------------------------------------------------------
@@ -336,7 +335,6 @@ class ParametricBivariateSpline:
             g_char   = np.sqrt(g_char_x**2 + g_char_y**2)
 
             # Boundary gradient in physical space via implicit function theorem
-            J = np.array([[dSdu[0], dSdv[0]], [dSdu[1], dSdv[1]]])
             grad_uv = np.array([dSdu[2], dSdv[2]])
             try:
                 grad_xy = np.linalg.solve(J, grad_uv)
@@ -355,7 +353,7 @@ class ParametricBivariateSpline:
         # ----------------------------------------------------------------
         # All checks passed — compute and return extrapolated value
         # ----------------------------------------------------------------
-        z = z2
+        z = float(z2)
 
         if self.log_z:
             z = np.exp(z)
@@ -383,48 +381,76 @@ class ParametricBivariateSpline:
         return z, (float(grad_xy_ext[0]), float(grad_xy_ext[1]))
 
     def eval(self, x, y, tol=1e-10, max_iter=50, threshold=100,
-             compute_gradients=False, extrapolate=False):
+             compute_gradients=False, extrapolate=False,
+             limit_distance=False, limit_consistency=False, limit_steepness=False,
+             consistency_threshold=0.5, distance_threshold=0.5, steepness_threshold=10):
+        """
+        Unified evaluation interface that handles both scalar and vector inputs.
 
-        x_is_iter = hasattr(x, '__iter__')
-        y_is_iter = hasattr(y, '__iter__')
+        If x and y are scalars, performs a single-point evaluation.
+        If x or y are iterables, performs a grid evaluation.
 
-        if not x_is_iter and not y_is_iter:
-            return self.eval_point(
-                x, y, tol=tol, max_iter=max_iter,
-                compute_gradients=compute_gradients, extrapolate=extrapolate)
+        Parameters
+        ----------
+        x, y : float or array-like
+            Target coordinates in physical space.
+        tol : float
+            Convergence tolerance on ||F(u,v)||.
+        max_iter : int
+            Maximum Newton iterations.
+        threshold : int
+            The total number of points above which vectorized eval_grid is used.
+        compute_gradients : bool
+            If True, also return (dz/dx, dz/dy).
+        extrapolate : bool
+            If True, allow (u, v) to leave the [0, 1] knot domain.
+        limit_distance, limit_consistency, limit_steepness : bool
+            Reliability checks for extrapolation.
+        consistency_threshold, distance_threshold, steepness_threshold : float
+            Thresholds for reliability checks.
+
+        Returns
+        -------
+        result : float, tuple, or multiple ndarrays
+            Depending on input type and compute_gradients flag.
+        """
+        eval_params = dict(
+            tol=tol, max_iter=max_iter,
+            compute_gradients=compute_gradients, extrapolate=extrapolate,
+            limit_distance=limit_distance, limit_consistency=limit_consistency,
+            limit_steepness=limit_steepness, consistency_threshold=consistency_threshold,
+            distance_threshold=distance_threshold, steepness_threshold=steepness_threshold
+        )
+
+        scalar_x = not hasattr(x, '__iter__')
+        scalar_y = not hasattr(y, '__iter__')
+
+        if scalar_x and scalar_y:
+            return self.eval_point(x, y, **eval_params)
 
         x_vals = np.atleast_1d(x)
         y_vals = np.atleast_1d(y)
 
         if len(x_vals) * len(y_vals) >= threshold:
-            return self.eval_grid(
-                x_vals, y_vals, tol=tol, max_iter=max_iter,
-                compute_gradients=compute_gradients, extrapolate=extrapolate)
+            return self.eval_grid(x_vals, y_vals, **eval_params)
 
         X, Y = np.meshgrid(x_vals, y_vals, indexing='ij')
         Z = np.zeros_like(X)
         if compute_gradients:
             dZdX = np.zeros_like(X)
             dZdY = np.zeros_like(X)
-            for i in range(X.shape[0]):
-                for j in range(X.shape[1]):
-                    z, (dzdx, dzdy) = self.eval_point(
-                        X[i, j], Y[i, j], tol=tol, max_iter=max_iter,
-                        compute_gradients=True, extrapolate=extrapolate)
-                    Z[i, j] = z
-                    dZdX[i, j] = dzdx
-                    dZdY[i, j] = dzdy
-            
+            for i, j in np.ndindex(X.shape):
+                z, (dzdx, dzdy) = self.eval_point(X[i, j], Y[i, j], **eval_params)
+                Z[i, j], dZdX[i, j], dZdY[i, j] = z, dzdx, dzdy
             return X, Y, Z, dZdX, dZdY
+        else:
+            for i, j in np.ndindex(X.shape):
+                Z[i, j] = self.eval_point(X[i, j], Y[i, j], **eval_params)
+            return X, Y, Z
 
-        for i in range(X.shape[0]):
-            for j in range(X.shape[1]):
-                Z[i, j] = self.eval_point(
-                    X[i, j], Y[i, j], tol=tol, max_iter=max_iter,  extrapolate=extrapolate)
-        
-        return X, Y, Z
-
-    def eval_point(self, x, y, tol=1e-10, max_iter=50, compute_gradients=False, extrapolate=False):
+    def eval_point(self, x, y, tol=1e-10, max_iter=50, compute_gradients=False, extrapolate=False,
+                   limit_distance=False, limit_consistency=False, limit_steepness=False,
+                   consistency_threshold=0.5, distance_threshold=0.5, steepness_threshold=10):
         """
         Find z = S_z(u*, v*) where S_x(u*, v*) = x and S_y(u*, v*) = y.
 
@@ -478,7 +504,11 @@ class ParametricBivariateSpline:
         else:
             ## no solution found (point may be ouside the defined domain)
             if extrapolate:
-                return self._extrapolate_point(x, y, compute_gradients=compute_gradients)
+                return self._extrapolate_point(
+                    x, y, compute_gradients=compute_gradients,
+                    limit_distance=limit_distance, limit_consistency=limit_consistency,
+                    limit_steepness=limit_steepness, consistency_threshold=consistency_threshold,
+                    distance_threshold=distance_threshold, steepness_threshold=steepness_threshold)
             else:
                 if compute_gradients:
                     return None, (None, None)
@@ -510,9 +540,12 @@ class ParametricBivariateSpline:
         if self.log_y:
             grad_xy[1] /= y
 
-        return z, float(grad_xy[0]), float(grad_xy[1])
+        return z, (float(grad_xy[0]), float(grad_xy[1]))
 
-    def eval_grid(self, x_vals, y_vals, tol=1e-10, max_iter=50, compute_gradients=False, extrapolate=False):
+    def eval_grid(self, x_vals, y_vals, tol=1e-10, max_iter=50, 
+                  compute_gradients=False, extrapolate=False,
+                  limit_distance=False, limit_consistency=False, limit_steepness=False,
+                  consistency_threshold=0.5, distance_threshold=0.5, steepness_threshold=10):
         """
         Evaluate z over a regular (x, y) grid using vectorized Newton.
 
@@ -615,7 +648,13 @@ class ParametricBivariateSpline:
                 for fi in failed_idx:
                     result = self._extrapolate_point(
                         x_flat[fi], y_flat[fi],
-                        compute_gradients=compute_gradients)
+                        compute_gradients=compute_gradients,
+                        limit_distance=limit_distance, 
+                        limit_consistency=limit_consistency,
+                        limit_steepness=limit_steepness, 
+                        consistency_threshold=consistency_threshold,
+                        distance_threshold=distance_threshold, 
+                        steepness_threshold=steepness_threshold)
                     if compute_gradients:
                         z_ext, (dzdx_ext, dzdy_ext) = result
                         if z_ext is not None:
