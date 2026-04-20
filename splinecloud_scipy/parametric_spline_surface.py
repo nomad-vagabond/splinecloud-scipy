@@ -605,40 +605,80 @@ class ParametricBivariateSpline:
         Z_flat = np.array([bisplev(ui, vi, self._tck_z)
                           for ui, vi in zip(u, v)], dtype=float)
 
+        # --- Handle non-converged (exterior) points ----------------------
+        failed = active  # points that never converged
+        extrap_cache = {}  # fi -> (z, dzdx, dzdy) for gradient reuse
+
+        if failed.any():
+            if extrapolate:
+                failed_idx = np.where(failed)[0]
+                for fi in failed_idx:
+                    result = self._extrapolate_point(
+                        x_flat[fi], y_flat[fi],
+                        compute_gradients=compute_gradients)
+                    if compute_gradients:
+                        z_ext, (dzdx_ext, dzdy_ext) = result
+                        if z_ext is not None:
+                            Z_flat[fi] = np.log(z_ext) if self.log_z else z_ext
+                            extrap_cache[fi] = (dzdx_ext, dzdy_ext)
+                    else:
+                        if result is not None:
+                            Z_flat[fi] = np.log(result) if self.log_z else result
+            else:
+                Z_flat[failed] = np.nan
+
         if not compute_gradients:
             if self.log_z:
                 Z_flat = np.exp(Z_flat)
-            
+
             return X, Y, Z_flat.reshape(shape)
 
         # --- Gradients via implicit function theorem ---------------------
-        dzdu = np.array([bisplev(ui, vi, self._tck_z, dx=1, dy=0)
-                        for ui, vi in zip(u, v)])
-        dzdv = np.array([bisplev(ui, vi, self._tck_z, dx=0, dy=1)
-                        for ui, vi in zip(u, v)])
-        grad_uv = np.stack([dzdu, dzdv], axis=1)        # (n, 2)
+        dzdx_flat = np.full(n, np.nan)
+        dzdy_flat = np.full(n, np.nan)
 
-        det = J_final[:, 0, 0] * J_final[:, 1, 1] - \
-              J_final[:, 0, 1] * J_final[:, 1, 0]
-        safe = np.abs(det) > 1e-14
+        # Converged (interior) points: use Jacobian-based gradients
+        conv = ~failed
+        if conv.any():
+            conv_idx = np.where(conv)[0]
+            dzdu = np.array([bisplev(u[i], v[i], self._tck_z, dx=1, dy=0)
+                            for i in conv_idx])
+            dzdv = np.array([bisplev(u[i], v[i], self._tck_z, dx=0, dy=1)
+                            for i in conv_idx])
+            grad_uv = np.stack([dzdu, dzdv], axis=1)
 
-        dzdx = np.where(safe,
-                        ( J_final[:, 1, 1] * grad_uv[:, 0] -
-                        J_final[:, 0, 1] * grad_uv[:, 1]) / det,
-                        np.nan)
-        dzdy = np.where(safe,
-                        (-J_final[:, 1, 0] * grad_uv[:, 0] +
-                        J_final[:, 0, 0] * grad_uv[:, 1]) / det,
-                        np.nan)
+            det = (J_final[conv_idx, 0, 0] * J_final[conv_idx, 1, 1] -
+                   J_final[conv_idx, 0, 1] * J_final[conv_idx, 1, 0])
+            safe = np.abs(det) > 1e-14
+
+            dzdx_flat[conv_idx] = np.where(
+                safe,
+                ( J_final[conv_idx, 1, 1] * grad_uv[:, 0] -
+                  J_final[conv_idx, 0, 1] * grad_uv[:, 1]) / det,
+                np.nan)
+            dzdy_flat[conv_idx] = np.where(
+                safe,
+                (-J_final[conv_idx, 1, 0] * grad_uv[:, 0] +
+                  J_final[conv_idx, 0, 0] * grad_uv[:, 1]) / det,
+                np.nan)
+
+        # Extrapolated points: reuse cached gradients from the first pass
+        for fi, (dzdx_ext, dzdy_ext) in extrap_cache.items():
+            if dzdx_ext is not None:
+                dzdx_flat[fi] = dzdx_ext
+                dzdy_flat[fi] = dzdy_ext
 
         if self.log_z:
             Z_flat = np.exp(Z_flat)
-            dzdx *= Z_flat
-            dzdy *= Z_flat
+            # Only apply log_z correction to converged points — extrapolated
+            # gradients already have it baked in from _extrapolate_point
+            if conv.any():
+                dzdx_flat[conv] *= Z_flat[conv]
+                dzdy_flat[conv] *= Z_flat[conv]
         if self.log_x:
-            dzdx /= x_flat
+            dzdx_flat /= x_flat
         if self.log_y:
-            dzdy /= y_flat
+            dzdy_flat /= y_flat
 
         return (X, Y, Z_flat.reshape(shape),
-                dzdx.reshape(shape), dzdy.reshape(shape))
+                dzdx_flat.reshape(shape), dzdy_flat.reshape(shape))
