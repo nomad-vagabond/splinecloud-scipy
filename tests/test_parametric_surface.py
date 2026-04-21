@@ -1,7 +1,7 @@
-import unittest
+import unittest, time
 
 import numpy as np
-from scipy.interpolate import splev
+from scipy.interpolate import splev, bisplev
 
 from splinecloud_scipy import ParametricBivariateSpline
 
@@ -39,11 +39,17 @@ def get_simple_surface_data():
 def get_asymmetric_surface_data():
     """ku=3, kv=2 data."""
     tu = np.array([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0]) # nu=5
-    tv = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])           # nv=4 (nv = 7-2-1=4)
+    tv = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])           # nv=4
     ku, kv = 3, 2
     
+    # Greville abscissae (non-degenerate mapping)
+    gu = np.array([0.0, 0.16666667, 0.5, 0.83333333, 1.0]) 
+    gv = np.array([0.0, 0.25, 0.75, 1.0])                 
+    GU, GV = np.meshgrid(gu, gv, indexing='ij')
+    
     cp = np.zeros((5, 4, 3))
-    # random but valid
+    cp[:, :, 0] = GU
+    cp[:, :, 1] = GV
     cp[:, :, 2] = np.random.rand(5, 4)
     return tu, tv, cp, ku, kv
 
@@ -174,10 +180,10 @@ class TestConstruction(unittest.TestCase):
 
 
 # =============================================================================
-# 2. EVALUATION TESTS
+# 2. FORWARD EVALUATION TESTS (__call__)
 # =============================================================================
 
-class TestEvaluation(unittest.TestCase):
+class TestCall(unittest.TestCase):
 
     def setUp(self):
         self.tu, self.tv, self.cp, self.ku, self.kv = get_simple_surface_data()
@@ -188,16 +194,120 @@ class TestEvaluation(unittest.TestCase):
         u, v = 0.3, 0.7
         x, y, z = self.surf(u, v)
         # For our simple surface x=u, y=v
-        self.assertAlmostEqual(x[0], 0.3, places=6)
-        self.assertAlmostEqual(y[0], 0.7, places=6)
+        self.assertAlmostEqual(x, 0.3, places=6)
+        self.assertAlmostEqual(y, 0.7, places=6)
+    
+    def test_scalar_input_returns_scalar(self):
+        # Call __call__ with scalar u and v values.
+        # Verify that returned x, y, z are Python floats, not arrays.
+        u, v = 0.3, 0.7
+        x, y, z = self.surf(u, v)
+        self.assertIsInstance(x, float)
+        self.assertIsInstance(y, float)
+        self.assertIsInstance(z, float)
+
+    def test_scalar_input_matches_bisplev(self):
+        # Call __call__ with scalar u and v.
+        # Verify that returned x, y, z match bisplev called directly on
+        # _tck_x, _tck_y, _tck_z with the same scalar inputs, to
+        # floating-point precision.
+        
+        u, v = 0.3, 0.7
+        x, y, z = self.surf(u, v)
+        
+        xb = float(bisplev(u, v, self.surf._tck_x))
+        yb = float(bisplev(u, v, self.surf._tck_y))
+        zb = float(bisplev(u, v, self.surf._tck_z))
+        
+        self.assertAlmostEqual(x, xb)
+        self.assertAlmostEqual(y, yb)
+        self.assertAlmostEqual(z, zb)
+
+    def test_array_input_returns_2d_grid(self):
+        # Call __call__ with u of length Nu and v of length Nv where Nu != Nv.
+        # Verify that x, y, z each have shape (Nu, Nv).
+        u = np.array([0.1, 0.2, 0.3])
+        v = np.array([0.4, 0.5])
+        x, y, z = self.surf(u, v)
+        self.assertEqual(x.shape, (3, 2))
+        self.assertEqual(y.shape, (3, 2))
+        self.assertEqual(z.shape, (3, 2))
+
+    def test_equal_length_arrays_return_2d_grid(self):
+        # Call __call__ with u and v arrays of equal length N.
+        # Verify that x, y, z each have shape (N, N), confirming that
+        # equal-length arrays still produce a full grid, not a diagonal.
+        N = 4
+        u = np.linspace(0.1, 0.4, N)
+        v = np.linspace(0.5, 0.8, N)
+        x, y, z = self.surf(u, v)
+        self.assertEqual(x.shape, (N, N))
+        self.assertEqual(y.shape, (N, N))
+        self.assertEqual(z.shape, (N, N))
+
+    def test_array_output_matches_bisplev(self):
+        # Call __call__ with u of length Nu and v of length Nv.
+        # Verify that x, y, z match bisplev called directly on _tck_x,
+        # _tck_y, _tck_z with the same arrays, to floating-point precision.
+        
+        u = np.linspace(0.1, 0.9, 5)
+        v = np.linspace(0.1, 0.9, 7)
+        x, y, z = self.surf(u, v)
+        
+        xb = bisplev(u, v, self.surf._tck_x)
+        yb = bisplev(u, v, self.surf._tck_y)
+        zb = bisplev(u, v, self.surf._tck_z)
+        
+        np.testing.assert_allclose(x, xb)
+        np.testing.assert_allclose(y, yb)
+        np.testing.assert_allclose(z, zb)
+
+    def test_boundary_parameter_values_no_nan(self):
+        # Call __call__ as scalar at the four boundary parameter corners:
+        # (tu[ku], tv[kv]), (tu[ku], tv[-(kv+1)]),
+        # (tu[-(ku+1)], tv[kv]), (tu[-(ku+1)], tv[-(kv+1)]).
+        # Verify that no NaN or Inf values are returned.
+        u_min, u_max = self.surf.tu[self.surf.ku], self.surf.tu[-(self.surf.ku + 1)]
+        v_min, v_max = self.surf.tv[self.surf.kv], self.surf.tv[-(self.surf.kv + 1)]
+        
+        for u in [u_min, u_max]:
+            for v in [v_min, v_max]:
+                x, y, z = self.surf(u, v)
+                self.assertTrue(np.isfinite(x))
+                self.assertTrue(np.isfinite(y))
+                self.assertTrue(np.isfinite(z))
+
+    def test_asymmetric_input_lengths(self):
+        # Call __call__ with u of length 7 and v of length 13 (deliberately
+        # asymmetric and not related to knot counts). Verify output shape
+        # is (7, 13) and values match bisplev directly.
+        
+        u = np.linspace(0.1, 0.9, 7)
+        v = np.linspace(0.1, 0.9, 13)
+        x, y, z = self.surf(u, v)
+        self.assertEqual(x.shape, (7, 13))
+        
+        xb = bisplev(u, v, self.surf._tck_x)
+        np.testing.assert_allclose(x, xb)
+
+
+# =============================================================================
+# 3. INVERSE EVALUATION TESTS (eval_point)
+# =============================================================================
+
+class TestEvaluation(unittest.TestCase):
+
+    def setUp(self):
+        self.tu, self.tv, self.cp, self.ku, self.kv = get_simple_surface_data()
+        self.surf = ParametricBivariateSpline(self.tu, self.tv, self.cp, self.ku, self.kv)
 
     def test_eval_point_interior(self):
         # Inverse evaluation: find z at (x, y)
         # Use (u, v) to find (x, y) first, then verify eval_point returns the same z
         u_ref, v_ref = 0.4, 0.6
         x_ref, y_ref, z_ref = self.surf(u_ref, v_ref)
-        z = self.surf.eval_point(x_ref[0], y_ref[0])
-        self.assertAlmostEqual(z, z_ref[0], places=6)
+        z = self.surf.eval_point(x_ref, y_ref)
+        self.assertAlmostEqual(z, z_ref, places=6)
 
     def test_eval_point_exterior(self):
         # Point outside the bounding box
@@ -209,8 +319,8 @@ class TestEvaluation(unittest.TestCase):
         # Test the unified eval() interface with scalars
         u_ref, v_ref = 0.2, 0.8
         x_ref, y_ref, z_ref = self.surf(u_ref, v_ref)
-        z = self.surf.eval(x_ref[0], y_ref[0])
-        self.assertAlmostEqual(z, z_ref[0], places=6)
+        z = self.surf.eval(x_ref, y_ref)
+        self.assertAlmostEqual(z, z_ref, places=6)
 
     def test_eval_array_interface(self):
         # Test unified eval() with arrays (should call eval_grid)
@@ -226,9 +336,50 @@ class TestEvaluation(unittest.TestCase):
                 z_expected = self.surf.eval_point(xv, yv)
                 self.assertAlmostEqual(Z[i, j], z_expected, places=6)
 
+    def test_consistent_with_eval_grid_scalar(self):
+        # For a single (x, y) point, verify that eval_point and eval_grid
+        # called with 1-element arrays return the same z value.
+        x, y = 0.5, 0.5
+        z_point = self.surf.eval_point(x, y)
+        X, Y, Z_grid = self.surf.eval_grid([x], [y])
+        self.assertAlmostEqual(z_point, Z_grid[0, 0])
+
+    def test_newton_convergence_near_boundary(self):
+        # Sample points near but strictly inside the parameter boundary.
+        # Verify that eval_point converges and returns values consistent
+        # with __call__ at those boundary-adjacent parameters.
+        u_min, u_max = self.surf.tu[self.surf.ku], self.surf.tu[-(self.surf.ku + 1)]
+        v_min, v_max = self.surf.tv[self.surf.kv], self.surf.tv[-(self.surf.kv + 1)]
+        
+        eps = 1e-8
+        test_points = [
+            (u_min + eps, v_min + eps),
+            (u_max - eps, v_min + eps),
+            (u_min + eps, v_max - eps),
+            (u_max - eps, v_max - eps),
+        ]
+        
+        for u, v in test_points:
+            x, y, z_ref = self.surf(u, v)
+            z = self.surf.eval_point(x, y)
+            self.assertIsNotNone(z)
+            self.assertAlmostEqual(z, z_ref, places=6)
+
+    def test_asymmetric_degrees_inversion(self):
+        # Using the asymmetric degree fixture, verify that eval_point
+        # correctly inverts __call__ for a set of interior (x, y) points.
+        tu, tv, cp, ku, kv = get_asymmetric_surface_data()
+        surf = ParametricBivariateSpline(tu, tv, cp, ku, kv)
+        
+        # Sample an interior point
+        u_ref, v_ref = 0.5, 0.5
+        x, y, z_ref = surf(u_ref, v_ref)
+        z = surf.eval_point(x, y)
+        self.assertIsNotNone(z)
+        self.assertAlmostEqual(z, z_ref, places=6)
 
 # =============================================================================
-# 3. GRID EVALUATION TESTS
+# 4. GRID EVALUATION TESTS (eval_grid)
 # =============================================================================
 
 class TestGridEvaluation(unittest.TestCase):
@@ -249,18 +400,56 @@ class TestGridEvaluation(unittest.TestCase):
                 z_expected = self.surf.eval_point(xv, yv)
                 self.assertAlmostEqual(Z[i, j], z_expected, places=6)
 
-    def test_vectorized_path_trigger(self):
-        # Verify that eval calls eval_grid when points exceed threshold
-        x_vals = np.linspace(0.1, 0.9, 10)
-        y_vals = np.linspace(0.1, 0.9, 11) # 110 points > 100
-        # We can't easily mock the call without pytest, so we just check it doesn't crash 
-        # and returns correct values.
-        X, Y, Z = self.surf.eval(x_vals, y_vals, threshold=100)
-        self.assertEqual(Z.shape, (10, 11))
+    def test_output_shape(self):
+        # Call eval_grid with x_vals of length Nx and y_vals of length Ny.
+        # Verify that X, Y, Z each have shape (Nx, Ny).
+        Nx, Ny = 5, 7
+        x_vals = np.linspace(0.1, 0.9, Nx)
+        y_vals = np.linspace(0.1, 0.9, Ny)
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals)
+        self.assertEqual(X.shape, (Nx, Ny))
+        self.assertEqual(Y.shape, (Nx, Ny))
+        self.assertEqual(Z.shape, (Nx, Ny))
 
+    def test_matches_eval_point_on_same_grid(self):
+        # Call eval_grid on a grid of (x_vals, y_vals). Then call eval_point
+        # individually on each (X[i,j], Y[i,j]) pair. Verify that Z values
+        # match to floating-point precision across all grid points.
+        x_vals = np.linspace(0.3, 0.7, 3)
+        y_vals = np.linspace(0.3, 0.7, 3)
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals)
+        
+        for i in range(len(x_vals)):
+            for j in range(len(y_vals)):
+                z_point = self.surf.eval_point(X[i, j], Y[i, j])
+                self.assertAlmostEqual(Z[i, j], z_point, places=6)
+
+    def test_no_nan_for_interior_points(self):
+        # Call eval_grid on a grid of (x, y) points known to be inside the
+        # surface domain. Verify that no NaN or Inf values appear in Z.
+        x_vals = np.linspace(0.1, 0.9, 20)
+        y_vals = np.linspace(0.1, 0.9, 20)
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals)
+        self.assertTrue(np.all(np.isfinite(Z)))
+
+    def test_large_grid_performance(self):
+        # Call eval_grid on a 200x200 grid and verify it completes within
+        # a reasonable time bound (e.g. 30 seconds).This is a regression guard 
+        # against performance degradation.
+        
+        N = 200
+        x_vals = np.linspace(0.1, 0.9, N)
+        y_vals = np.linspace(0.1, 0.9, N)
+        
+        start = time.time()
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals)
+        duration = time.time() - start
+        
+        self.assertLess(duration, 30.0)
+        self.assertEqual(Z.shape, (N, N))
 
 # =============================================================================
-# 4. GRADIENT TESTS
+# 5. GRADIENT TESTS
 # =============================================================================
 
 class TestGradients(unittest.TestCase):
@@ -269,30 +458,130 @@ class TestGradients(unittest.TestCase):
         self.tu, self.tv, self.cp, self.ku, self.kv = get_simple_surface_data()
         self.surf = ParametricBivariateSpline(self.tu, self.tv, self.cp, self.ku, self.kv)
 
-    def test_point_gradients(self):
-        # For our surface, x=u, y=v, z approx u^2 + v^2
-        # So dz/dx = dz/du * du/dx + dz/dv * dv/dx = dz/du
-        # Analytical dz/du at 0.5 should be approx 2*0.5 = 1.0
+    def test_eval_point_gradient_shape(self):
+        # Call eval_point with compute_gradients=True. Verify the return
+        # value is (z, (dzdx, dzdy)) where z, dzdx, dzdy are all floats.
+        x, y = 0.5, 0.5
+        z, (dzdx, dzdy) = self.surf.eval_point(x, y, compute_gradients=True)
+        self.assertIsInstance(z, float)
+        self.assertIsInstance(dzdx, float)
+        self.assertIsInstance(dzdy, float)
+
+    def test_eval_grid_gradient_shape(self):
+        # Call eval_grid with compute_gradients=True. Verify the return
+        # value is (X, Y, Z, dZdX, dZdY) where each is shape (Nx, Ny).
+        Nx, Ny = 3, 4
+        x_vals = np.linspace(0.4, 0.6, Nx)
+        y_vals = np.linspace(0.4, 0.6, Ny)
+        X, Y, Z, dZdX, dZdY = self.surf.eval_grid(x_vals, y_vals, compute_gradients=True)
+        self.assertEqual(X.shape, (Nx, Ny))
+        self.assertEqual(Y.shape, (Nx, Ny))
+        self.assertEqual(Z.shape, (Nx, Ny))
+        self.assertEqual(dZdX.shape, (Nx, Ny))
+        self.assertEqual(dZdY.shape, (Nx, Ny))
+
+    def test_gradient_returns_none_on_failed_inversion(self):
+        # Call eval_point with compute_gradients=True on a point outside
+        # the domain with extrapolate=False. Verify return is (None, (None, None)).
+        z, (dzdx, dzdy) = self.surf.eval_point(2.0, 2.0, compute_gradients=True, extrapolate=False)
+        self.assertIsNone(z)
+        self.assertIsNone(dzdx)
+        self.assertIsNone(dzdy)
+
+    def test_eval_grid_gradients_are_none_on_failed_inversion(self):
+        # Call eval_grid with compute_gradients=True on a grid of points outside
+        # the domain with extrapolate=False. Verify return is (X, Y, Z, dZdX, dZdY)
+        # where dZdX and dZdY are all None.
+        Nx, Ny = 3, 4
+        x_vals = np.linspace(2.0, 3.0, Nx)
+        y_vals = np.linspace(2.0, 3.0, Ny)
+        X, Y, Z, dZdX, dZdY = self.surf.eval_grid(
+            x_vals, y_vals, compute_gradients=True, extrapolate=False)
+
+        self.assertTrue(np.all(np.isnan(dZdX)))
+        self.assertTrue(np.all(np.isnan(dZdY)))
+
+    def test_eval_point_gradients(self):
         x, y = 0.5, 0.5
         z, (dzdx, dzdy) = self.surf.eval_point(x, y, compute_gradients=True)
         
-        # Exact values depend on spline coefficients, but should be near 1.0
-        # Let's check consistency: dz/dx should be (z(x+eps) - z(x-eps))/(2*eps)
         eps = 1e-6
-
         z_xplus = self.surf.eval_point(x + eps, y)
         z_xminus = self.surf.eval_point(x - eps, y)
-        dzdx_num = (z_xplus - z_xminus) / (2 * eps)
-        
-        self.assertAlmostEqual(dzdx, dzdx_num, places=5)
+        dzdx_calc = (z_xplus - z_xminus) / (2 * eps)
 
         z_yplus = self.surf.eval_point(x, y + eps)
         z_yminus = self.surf.eval_point(x, y - eps)
-        dzdy_num = (z_yplus - z_yminus) / (2 * eps)
+        dzdy_calc = (z_yplus - z_yminus) / (2 * eps)
         
-        self.assertAlmostEqual(dzdy, dzdy_num, places=5)
+        self.assertAlmostEqual(dzdx, dzdx_calc, places=5)
+        self.assertAlmostEqual(dzdy, dzdy_calc, places=5)
 
-    def test_grid_gradients(self):
+    def test_eval_point_gradients_on_grid(self):
+        # Perform similar check but for several points inside domain
+        x_vals = [0.3, 0.5, 0.7]
+        y_vals = [0.2, 0.4, 0.8]
+        eps = 1e-6
+        
+        for x in x_vals:
+            for y in y_vals:
+                z, (dzdx, dzdy) = self.surf.eval_point(x, y, compute_gradients=True)
+                
+                z_xplus = self.surf.eval_point(x + eps, y)
+                z_xminus = self.surf.eval_point(x - eps, y)
+                dzdx_calc = (z_xplus - z_xminus) / (2 * eps)
+
+                z_yplus = self.surf.eval_point(x, y + eps)
+                z_yminus = self.surf.eval_point(x, y - eps)
+                dzdy_calc = (z_yplus - z_yminus) / (2 * eps)
+                
+                self.assertAlmostEqual(dzdx, dzdx_calc, places=5)
+                self.assertAlmostEqual(dzdy, dzdy_calc, places=5)
+
+    def test_asymmetric_degrees_gradient(self):
+        # Using the asymmetric degree fixture, verify that gradients match
+        # finite differences for ku != kv surfaces.
+        tu, tv, cp, ku, kv = get_asymmetric_surface_data()
+        surf = ParametricBivariateSpline(tu, tv, cp, ku, kv)
+        
+        x, y = 0.5, 0.5
+        z, (dzdx, dzdy) = surf.eval_point(x, y, compute_gradients=True)
+        
+        eps = 1e-6
+        z_xplus = surf.eval_point(x + eps, y)
+        z_xminus = surf.eval_point(x - eps, y)
+        dzdx_calc = (z_xplus - z_xminus) / (2 * eps)
+        
+        z_yplus = surf.eval_point(x, y + eps)
+        z_yminus = surf.eval_point(x, y - eps)
+        dzdy_calc = (z_yplus - z_yminus) / (2 * eps)
+
+        self.assertAlmostEqual(dzdx, dzdx_calc, places=5)
+        self.assertAlmostEqual(dzdy, dzdy_calc, places=5)
+
+    def test_eval_grid_gradients(self):
+        ## Perform check with calculated gradients using epsilon for each point on grid
+        x_vals = np.linspace(0.3, 0.7, 3)
+        y_vals = np.linspace(0.3, 0.7, 4)
+        X, Y, Z, dZdX, dZdY = self.surf.eval_grid(x_vals, y_vals, compute_gradients=True)
+        
+        eps = 1e-6
+        for i in range(len(x_vals)):
+            for j in range(len(y_vals)):
+                x, y = X[i, j], Y[i, j]
+                
+                z_xplus = self.surf.eval_point(x + eps, y)
+                z_xminus = self.surf.eval_point(x - eps, y)
+                dzdx_calc = (z_xplus - z_xminus) / (2 * eps)
+
+                z_yplus = self.surf.eval_point(x, y + eps)
+                z_yminus = self.surf.eval_point(x, y - eps)
+                dzdy_calc = (z_yplus - z_yminus) / (2 * eps)
+                
+                self.assertAlmostEqual(dZdX[i, j], dzdx_calc, places=5)
+                self.assertAlmostEqual(dZdY[i, j], dzdy_calc, places=5)
+
+    def test_eval_grid_gradients_same_as_eval_point_gradients(self):
         x_vals = np.array([0.4, 0.6])
         y_vals = np.array([0.3, 0.7])
         X, Y, Z, dZdX, dZdY = self.surf.eval_grid(x_vals, y_vals, compute_gradients=True)
@@ -304,9 +593,8 @@ class TestGradients(unittest.TestCase):
                 self.assertAlmostEqual(dZdX[i, j], gx, places=6)
                 self.assertAlmostEqual(dZdY[i, j], gy, places=6)
 
-
 # =============================================================================
-# 5. EXTRAPOLATION TESTS
+# 6. EXTRAPOLATION TESTS
 # =============================================================================
 
 class TestExtrapolation(unittest.TestCase):
@@ -317,29 +605,171 @@ class TestExtrapolation(unittest.TestCase):
 
     def test_extrapolation_z_value(self):
         # Point slightly outside: x=1.1, y=0.5
-        # Newton should fail, extrapolation should return a value
+        # Newton method should fail, extrapolation should return a value
         z = self.surf.eval_point(1.1, 0.5, extrapolate=True)
         self.assertIsNotNone(z)
         # Should be roughly (1.1)^2 + (0.5)^2 = 1.21 + 0.25 = 1.46
-        self.assertTrue(1.25 < z < 1.75)
+        self.assertTrue(1.4 < z < 1.6)
 
-    def test_extrapolation_gradients(self):
+    def test_extrapolation_gradients_are_not_none(self):
         x, y = 1.1, 0.5
         z, (dzdx, dzdy) = self.surf.eval_point(x, y, extrapolate=True, compute_gradients=True)
         self.assertIsNotNone(z)
         self.assertIsNotNone(dzdx)
         self.assertIsNotNone(dzdy)
 
-    def test_limit_distance(self):
+    def test_point_extrapolate_false_returns_none_outside(self):
+        # Call eval_point with extrapolate=False on a point known to be
+        # outside the surface domain. Verify None is returned.
+        z = self.surf.eval_point(1.5, 0.5, extrapolate=False)
+        self.assertIsNone(z)
+
+    def test_grid_extrapolate_false_returns_none_outside(self):
+        # eval_grid with extrapolate=False should return NaN for outside points
+        x_vals = np.linspace(1.2, 1.5, 3)
+        y_vals = np.linspace(0.4, 0.6, 2)
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals, extrapolate=False)
+        self.assertTrue(np.all(np.isnan(Z)))
+
+    def test_eval_extrapolate_false_returns_none_outside(self):
+        # eval() with extrapolate=False should return None (scalar) or NaN (array)
+        z_scalar = self.surf.eval(1.5, 0.5, extrapolate=False)
+        self.assertIsNone(z_scalar)
+        
+        X, Y, Z = self.surf.eval(np.array([1.5]), np.array([0.5]), extrapolate=False)
+        self.assertTrue(np.all(np.isnan(Z)))
+
+    def test_point_extrapolate_true_returns_finite_outside(self):
+        # Call eval_point with extrapolate=True on a point just outside
+        # the surface domain. Verify a finite float is returned.
+        z = self.surf.eval_point(1.1, 0.5, extrapolate=True)
+        self.assertIsInstance(z, float)
+        self.assertTrue(np.isfinite(z))
+
+    def test_grid_extrapolate_true_returns_finite_outside(self):
+        # eval_grid with extrapolate=True should return finite values
+        x_vals = np.linspace(1.1, 1.2, 2)
+        y_vals = np.linspace(0.4, 0.6, 2)
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals, extrapolate=True)
+        self.assertTrue(np.all(np.isfinite(Z)))
+
+    def test_eval_extrapolate_true_returns_finite_outside(self):
+        # eval() with extrapolate=True should return finite values
+        z_scalar = self.surf.eval(1.1, 0.5, extrapolate=True)
+        self.assertIsInstance(z_scalar, float)
+        self.assertTrue(np.isfinite(z_scalar))
+        
+        X, Y, Z = self.surf.eval(np.array([1.1]), np.array([0.5]), extrapolate=True)
+        self.assertTrue(np.all(np.isfinite(Z)))
+
+    def test_point_limit_distance(self):
         # Very far point should return None if limit_distance is True
         z = self.surf.eval_point(10.0, 10.0, extrapolate=True, limit_distance=True, distance_threshold=0.1)
         self.assertIsNone(z)
 
-    def test_limit_consistency(self):
-        # There is no trivial way to force inconsistency, but we can verify it doesn't crash
-        z = self.surf.eval_point(1.2, 0.5, extrapolate=True, limit_consistency=True, consistency_threshold=0.001)
-        # At 1.2 it might already fail consistency if threshold is very low
-        pass
+    def test_grid_limit_distance(self):
+        # eval_grid with limit_distance=True should return NaN for very far points
+        x_vals = np.array([10.0])
+        y_vals = np.array([10.0])
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals, extrapolate=True, limit_distance=True, distance_threshold=0.1)
+        self.assertTrue(np.all(np.isnan(Z)))
+
+    def test_eval_limit_distance(self):
+        # eval() with limit_distance=True should return None/NaN for very far points
+        z_scalar = self.surf.eval(10.0, 10.0, extrapolate=True, limit_distance=True, distance_threshold=0.1)
+        self.assertIsNone(z_scalar)
+        
+        X, Y, Z = self.surf.eval(np.array([10.0]), np.array([10.0]), extrapolate=True, limit_distance=True, distance_threshold=0.1)
+        self.assertTrue(np.all(np.isnan(Z)))
+
+    def test_steepness_check_returns_none_near_asymptote(self):
+        # Construct a surface that rises steeply at one edge (simulating
+        # near-asymptotic behaviour).
+        tu, tv, cp, ku, kv = get_simple_surface_data()
+        # Make z very large at u=1 edge
+        cp[-1, :, 2] *= 1000.0  
+        surf_steep = ParametricBivariateSpline(tu, tv, cp, ku, kv)
+        
+        # Evaluate outside the steep edge
+        x_b, y_b, _ = surf_steep(1.0, 0.5)
+        z = surf_steep.eval_point(x_b + 0.01, y_b, extrapolate=True, limit_steepness=True)
+        self.assertIsNone(z)
+
+    def test_g0_continuity_at_boundary(self):
+        # Sample a sequence of (x, y) points crossing from inside to outside
+        # the domain along a straight line.
+        x_b, y_b, _ = self.surf(1.0, 0.5)
+        steps = np.linspace(-0.01, 0.01, 20)
+        z_vals = []
+        for s in steps:
+            z = self.surf.eval_point(x_b + s, y_b, extrapolate=True)
+            z_vals.append(z)
+        
+        # Check for large jumps
+        z_diffs = np.abs(np.diff(z_vals))
+        self.assertTrue(np.all(z_diffs < 0.1))
+
+    def test_g1_continuity_at_boundary(self):
+        # Sample a point on the boundary edge. Evaluate __call__ to get
+        # z_boundary and calculate first derivatives. Call eval_point with
+        # extrapolate=True at a point epsilon outside the boundary. Calculate first derivatives.
+        # Verify that calculated first derivatives match within O(epsilon).
+        u_bound, v_bound = 1.0, 0.5
+        x_b, y_b, z_b = self.surf(u_bound, v_bound)
+
+        eps = 1e-6
+        
+        # Interior gradient via eval_point (at boundary)
+        _, (gx_in, gy_in) = self.surf.eval_point(x_b - eps, y_b, compute_gradients=True)
+        
+        # Extrapolated gradient slightly outside
+        _, (gx_out, gy_out) = self.surf.eval_point(x_b + eps, y_b, extrapolate=True, compute_gradients=True)
+        
+        self.assertAlmostEqual(gx_in, gx_out, places=3)
+        self.assertAlmostEqual(gy_in, gy_out, places=3)
+
+    def test_g2_continuity_at_boundary(self):
+        # Extend the G1 test to verify that the second derivative of the
+        # extrapolated z matches the surface second derivative at the
+        # boundary to within O(epsilon).
+        u_bound, v_bound = 1.0, 0.5
+        x_b, y_b, z_b = self.surf(u_bound, v_bound)
+        
+        # Since extrapolation is second-order Taylor, the second derivative 
+        # is constant in the extrapolation region and matches the boundary second order.
+        # We can test this by checking if the gradient changes linearly.
+        eps = 1e-4
+        _, (g1_x, _) = self.surf.eval_point(x_b + eps, y_b, extrapolate=True, compute_gradients=True)
+        _, (g2_x, _) = self.surf.eval_point(x_b + 2*eps, y_b, extrapolate=True, compute_gradients=True)
+        
+        # Finite difference of gradients (2nd derivative)
+        d2zdx2_ext = (g2_x - g1_x) / eps
+        
+        # Interior 2nd derivative at boundary
+        _, (g0_x, _) = self.surf.eval_point(x_b - eps, y_b, compute_gradients=True)
+        # Central difference across the boundary using extrapolated gradient
+        d2zdx2_int = (g1_x - g0_x) / (2 * eps)
+        
+        self.assertAlmostEqual(d2zdx2_ext, d2zdx2_int, places=2)
+
+    def test_eval_grid_extrapolation_works(self):
+        # Call eval_grid with extrapolate=True on a grid that contains both
+        # inside and outside points.
+        x_vals = np.linspace(0.8, 1.2, 10)
+        y_vals = np.linspace(0.4, 0.6, 5)
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals, extrapolate=True)
+        self.assertTrue(np.all(np.isfinite(Z)))
+        # Verify a point outside is actually extrapolated
+        z_out = self.surf.eval_point(1.2, 0.5, extrapolate=True)
+        self.assertAlmostEqual(Z[-1, 2], z_out)
+
+    def test_corner_extrapolation(self):
+        # Call eval_point with extrapolate=True on a point outside both
+        # the u and v extents simultaneously (diagonal corner case).
+        x_b, y_b, _ = self.surf(1.0, 1.0)
+        z = self.surf.eval_point(x_b + 0.1, y_b + 0.1, extrapolate=True)
+        self.assertIsNotNone(z)
+        self.assertTrue(np.isfinite(z))
 
 if __name__ == '__main__':
     unittest.main()

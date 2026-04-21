@@ -54,42 +54,39 @@ class ParametricBivariateSpline:
 
         self._build_search_grid()
 
-    def __call__(self, u, v, grid=False):
+    def __call__(self, u, v):
         """
         Evaluate the surface at parameter coordinates (u, v).
 
         Parameters
         ----------
         u, v : float or array-like
-            Parameter values within the knot-vector domain.
-        grid : bool
-            If True, evaluate on the Cartesian product u × v; returned
-            arrays have shape (len(u), len(v)).
-            If False (default), evaluate point-wise; u and v must match
-            in length.
+               Parameter values within the knot-vector domain.
 
         Returns
         -------
-        x, y, z : ndarrays
+        x, y, z : ndarrays of computed coordinates with shape (len(u), len(v))
+                  or scalars if u and v are scalars
         """
-        u = np.atleast_1d(np.asarray(u, dtype=float))
-        v = np.atleast_1d(np.asarray(v, dtype=float))
 
-        x = bisplev(u, v, self._tck_x)
-        y = bisplev(u, v, self._tck_y)
-        z = bisplev(u, v, self._tck_z)
+        u_in = np.asarray(u, dtype=float)
+        v_in = np.asarray(v, dtype=float)
+        scalar_input = u_in.ndim == 0 and v_in.ndim == 0
 
-        if not grid and u.shape == v.shape:
-            # bisplev returns a 2-D grid if len(u)>1 and len(v)>1,
-            # but may return a scalar if both are length 1.
-            x = np.atleast_1d(x if x.ndim <= 1 else np.diag(x))
-            y = np.atleast_1d(y if y.ndim <= 1 else np.diag(y))
-            z = np.atleast_1d(z if z.ndim <= 1 else np.diag(z))
+        u_arr = np.atleast_1d(u_in)
+        v_arr = np.atleast_1d(v_in)
+
+        x = bisplev(u_arr, v_arr, self._tck_x)
+        y = bisplev(u_arr, v_arr, self._tck_y)
+        z = bisplev(u_arr, v_arr, self._tck_z)
 
         if self.log_x: x = np.exp(x)
         if self.log_y: y = np.exp(y)
         if self.log_z: z = np.exp(z)
 
+        if scalar_input:
+            return float(x), float(y), float(z)
+        
         return x, y, z
 
     def _build_search_grid(self):
@@ -661,9 +658,13 @@ class ParametricBivariateSpline:
                         if z_ext is not None:
                             Z_flat[fi] = np.log(z_ext) if self.log_z else z_ext
                             extrap_cache[fi] = (dzdx_ext, dzdy_ext)
+                        else:
+                            Z_flat[fi] = np.nan
                     else:
                         if result is not None:
                             Z_flat[fi] = np.log(result) if self.log_z else result
+                        else:
+                            Z_flat[fi] = np.nan
             else:
                 Z_flat[failed] = np.nan
 
