@@ -110,5 +110,9 @@ def load_spline_surface(surface_id_or_url):
     # Attach subset loader lazily, mirroring the curve API
     surface.subset_uids = data.get("subset_uids", [])
     surface.load_data = lambda: [load_subset(uid) for uid in surface.subset_uids]
+
+    surface.x_label = data["labels"]["xlabel"]
+    surface.y_label = data["labels"]["ylabel"]
+    surface.z_label = data["labels"]["zlabel"]
    
     return surface
