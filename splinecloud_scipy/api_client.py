@@ -68,6 +68,78 @@ def load_spline(curve_id_or_url):
     return spline
 
 
+class SplineSurface(ParametricBivariateSpline):
+    """
+    An extension of ParametricBivariateSpline that handles metadata
+    specific to the SplineCloud API.
+    """
+    def __init__(self, data):
+        sp = data["spline"]
+        cp = np.array(sp["cp"], dtype=float)   # (nu, nv, 3)
+        w  = np.array(sp["w"],  dtype=float)   # (nu, nv)
+        tu = np.array(sp["tu"], dtype=float)
+        tv = np.array(sp["tv"], dtype=float)
+        ku = int(sp["ku"])
+        kv = int(sp["kv"])
+
+        log_x = data.get("scale_x") == "Logarithmic"
+        log_y = data.get("scale_y") == "Logarithmic"
+        log_z = data.get("scale_z") == "Logarithmic"
+
+        flip_yz = data.get("surface_type") == "lofted"
+
+        super().__init__(
+            tu, tv, cp, ku, kv, w=w,
+            log_x=log_x, log_y=log_y, log_z=log_z,
+            flip_yz=flip_yz,
+        )
+
+        # Identification and Metadata
+        self.uid = data.get("uid")
+        self.name = data.get("name")
+        self.description = data.get("description")
+        self.surface_type = data.get("surface_type")
+
+        # Relational data
+        self.subset_uids = data.get("subset_uids", [])
+        self.z_values = data.get("z_values", [])
+        self.curve_uids = data.get("curve_uids", [])
+        self.relation_uid = data.get("relation_uid")
+        self.relation_name = data.get("relation_name")
+
+        # Labels
+        labels = data.get("labels", {})
+        self.x_label = labels.get("xlabel")
+        self.y_label = labels.get("ylabel")
+        self.z_label = labels.get("zlabel")
+
+        self.subsets = []
+
+    def load_subsets(self):
+        """
+        Load datasets associated with this surface.
+        """
+        if self.subsets:
+            return self.subsets
+        
+        self.subsets = [load_subset(uid) for uid in self.subset_uids]
+        return self.subsets
+
+    def load_data(self):
+        """
+        Load data points.
+        """
+        if not self.subsets:
+            self.load_subsets()
+        
+        data = []
+        for i, item in enumerate(self.subsets):
+            subset_data = item[1]
+            for point in subset_data:
+                data.append([point[0], point[1], self.z_values[i]])
+        
+        return [self.x_label, self.y_label, self.z_label], np.array(data)
+
 def load_spline_surface(surface_id_or_url):
     """
     Fetch a spline surface from the SplineCloud API and return a
@@ -88,31 +160,4 @@ def load_spline_surface(surface_id_or_url):
     response.raise_for_status()
     data = json.loads(response.content)
 
-    sp = data["spline"]
-    cp = np.array(sp["cp"], dtype=float)   # (nu, nv, 3)
-    w  = np.array(sp["w"],  dtype=float)   # (nu, nv)
-    tu = np.array(sp["tu"], dtype=float)
-    tv = np.array(sp["tv"], dtype=float)
-    ku = int(sp["ku"])
-    kv = int(sp["kv"])
-
-    log_x = data.get("scale_x") == "Logarithmic"
-    log_y = data.get("scale_y") == "Logarithmic"
-    log_z = data.get("scale_z") == "Logarithmic"
-
-    flip_yz = data.get("surface_type") == "lofted"
-
-    surface = ParametricBivariateSpline(
-        tu, tv, cp, ku, kv, w=w,
-        log_x=log_x, log_y=log_y, log_z=log_z,
-        flip_yz=flip_yz,
-    )
-    # Attach subset loader lazily, mirroring the curve API
-    surface.subset_uids = data.get("subset_uids", [])
-    surface.load_data = lambda: [load_subset(uid) for uid in surface.subset_uids]
-
-    surface.x_label = data["labels"]["xlabel"]
-    surface.y_label = data["labels"]["ylabel"]
-    surface.z_label = data["labels"]["zlabel"]
-   
-    return surface
+    return SplineSurface(data)
