@@ -45,9 +45,11 @@ class ParametricBivariateSpline:
         # When flip_yz is True swap indices 1 and 2 to keep _tck_y / _tck_z semantically correct.
         if flip_yz:
             iy, iz = 2, 1
+            self.log_y = log_z
+            self.log_z = log_y
         else:
             iy, iz = 1, 2
-
+            
         self._tck_x = (self.tu, self.tv, cp[:, :, 0].ravel(), self.ku, self.kv)
         self._tck_y = (self.tu, self.tv, cp[:, :, iy].ravel(), self.ku, self.kv)
         self._tck_z = (self.tu, self.tv, cp[:, :, iz].ravel(), self.ku, self.kv)
@@ -80,9 +82,9 @@ class ParametricBivariateSpline:
         y = bisplev(u_arr, v_arr, self._tck_y)
         z = bisplev(u_arr, v_arr, self._tck_z)
 
-        if self.log_x: x = np.exp(x)
-        if self.log_y: y = np.exp(y)
-        if self.log_z: z = np.exp(z)
+        if self.log_x: x = np.pow(10, x)
+        if self.log_y: y = np.pow(10, y)
+        if self.log_z: z = np.pow(10, z)
 
         if scalar_input:
             return float(x), float(y), float(z)
@@ -113,6 +115,53 @@ class ParametricBivariateSpline:
         self._search_y = np.atleast_2d(bisplev(self._search_u, self._search_v, self._tck_y)).reshape(len(self._search_u), len(self._search_v))
         self._search_z = np.atleast_2d(bisplev(self._search_u, self._search_v, self._tck_z)).reshape(len(self._search_u), len(self._search_v))
 
+    def _bisplev_d2(self, u, v, tck, du=0, dv=0, eps=1e-7):
+        """
+        Evaluate a second-order (or mixed) derivative of a bivariate spline,
+        working around the bisplev constraint that derivative order must be
+        strictly less than the spline degree (dx < kx).
+
+        For degree >= 3: uses bisplev directly.
+        For degree == 2: the second derivative is piecewise constant;
+                         computed via finite differences of the first derivative.
+        For degree <= 1: returns 0 (linear or constant spline).
+
+        Parameters
+        ----------
+        du, dv : int
+            Derivative orders along u and v (each 0, 1, or 2, with du+dv <= 2).
+        """
+        # Pure second derivative w.r.t. u
+        if du == 2 and dv == 0:
+            if self.ku >= 3:
+                return float(bisplev(u, v, tck, dx=2, dy=0))
+            elif self.ku >= 2:
+                fp = float(bisplev(u + eps, v, tck, dx=1, dy=0))
+                fm = float(bisplev(u - eps, v, tck, dx=1, dy=0))
+                return (fp - fm) / (2 * eps)
+            else:
+                return 0.0
+
+        # Pure second derivative w.r.t. v
+        if du == 0 and dv == 2:
+            if self.kv >= 3:
+                return float(bisplev(u, v, tck, dx=0, dy=2))
+            elif self.kv >= 2:
+                fp = float(bisplev(u, v + eps, tck, dx=0, dy=1))
+                fm = float(bisplev(u, v - eps, tck, dx=0, dy=1))
+                return (fp - fm) / (2 * eps)
+            else:
+                return 0.0
+
+        # Mixed derivative d²/dudv
+        if du == 1 and dv == 1:
+            if self.ku >= 2 and self.kv >= 2:
+                return float(bisplev(u, v, tck, dx=1, dy=1))
+            else:
+                return 0.0
+
+        raise ValueError(f"Unsupported derivative order du={du}, dv={dv}")
+
     def _compute_boundary_point(self, x, y):
         """
         Find the nearest point on the surface boundary in physical (x, y)
@@ -133,7 +182,6 @@ class ParametricBivariateSpline:
         u_min, u_max = self.tu[self.ku],  self.tu[-(self.ku + 1)]
         v_min, v_max = self.tv[self.kv],  self.tv[-(self.kv + 1)]
 
-        max_du, max_dv = min(2, self.ku), min(2, self.kv)
 
         # --- Coarse boundary search --------------------------------------
         n_edge = 100
@@ -174,9 +222,9 @@ class ParametricBivariateSpline:
             val   = float(bisplev(u, v, tck))
             du    = float(bisplev(u, v, tck, dx=1, dy=0))
             dv    = float(bisplev(u, v, tck, dx=0, dy=1))
-            du2   = float(bisplev(u, v, tck, dx=max_du, dy=0))
-            dv2   = float(bisplev(u, v, tck, dx=0, dy=max_dv))
-            dudv  = float(bisplev(u, v, tck, dx=min(1, max_du), dy=min(1, max_dv)))
+            du2   = self._bisplev_d2(u, v, tck, du=2, dv=0)
+            dv2   = self._bisplev_d2(u, v, tck, du=0, dv=2)
+            dudv  = self._bisplev_d2(u, v, tck, du=1, dv=1)
             return val, du, dv, du2, dv2, dudv
 
         xb, dxdu, dxdv, d2xdu2, d2xdv2, d2xdudv = _eval_derivs(self._tck_x, u_b, v_b)
@@ -221,13 +269,13 @@ class ParametricBivariateSpline:
             if free_u:
                 dxdt = float(bisplev(u, v, self._tck_x, dx=1, dy=0))
                 dydt = float(bisplev(u, v, self._tck_y, dx=1, dy=0))
-                d2xdt2 = float(bisplev(u, v, self._tck_x, dx=min(2, self.ku), dy=0))
-                d2ydt2 = float(bisplev(u, v, self._tck_y, dx=min(2, self.ku), dy=0))
+                d2xdt2 = self._bisplev_d2(u, v, self._tck_x, du=2, dv=0)
+                d2ydt2 = self._bisplev_d2(u, v, self._tck_y, du=2, dv=0)
             else:
                 dxdt = float(bisplev(u, v, self._tck_x, dx=0, dy=1))
                 dydt = float(bisplev(u, v, self._tck_y, dx=0, dy=1))
-                d2xdt2 = float(bisplev(u, v, self._tck_x, dx=0, dy=min(2, self.kv)))
-                d2ydt2 = float(bisplev(u, v, self._tck_y, dx=0, dy=min(2, self.kv)))
+                d2xdt2 = self._bisplev_d2(u, v, self._tck_x, du=0, dv=2)
+                d2ydt2 = self._bisplev_d2(u, v, self._tck_y, du=0, dv=2)
 
             grad = (xb - x) * dxdt + (yb - y) * dydt
             hess = (dxdt**2 + dydt**2
@@ -256,7 +304,8 @@ class ParametricBivariateSpline:
         Parameters
         ----------
         x, y : float
-            Target coordinates in physical space.
+            Target coordinates in internal (log-) space — callers must
+            convert physical values via log10() before passing them in.
         compute_gradients : bool
             If True, also return (dz/dx, dz/dy).
         consistency_threshold : float
@@ -354,7 +403,7 @@ class ParametricBivariateSpline:
         z = float(z2)
 
         if self.log_z:
-            z = np.exp(z)
+            z = np.pow(10, z)
 
         if not compute_gradients:
             return z
@@ -370,11 +419,13 @@ class ParametricBivariateSpline:
             return _failed
 
         if self.log_z:
-            grad_xy_ext *= z
+            grad_xy_ext *= z * np.log(10)
         if self.log_x:
-            grad_xy_ext[0] /= x
+            x_phys = np.pow(10, x)
+            grad_xy_ext[0] /= (x_phys * np.log(10))
         if self.log_y:
-            grad_xy_ext[1] /= y
+            y_phys = np.pow(10, y)
+            grad_xy_ext[1] /= (y_phys * np.log(10))
 
         return z, (float(grad_xy_ext[0]), float(grad_xy_ext[1]))
 
@@ -455,6 +506,7 @@ class ParametricBivariateSpline:
         Parameters
         ----------
         x, y : float
+            Target coordinates in physical space.
         tol : float
         max_iter : int
         compute_gradients : bool
@@ -465,6 +517,11 @@ class ParametricBivariateSpline:
         z : float, or None if Newton did not converge.
         (dzdx, dzdy) : tuple of float, only if compute_gradients=True.
         """
+        # --- Convert to log-space for internal search ---------------------
+        x_phys, y_phys = x, y
+        if self.log_x: x = np.log10(x)
+        if self.log_y: y = np.log10(y)
+
         # --- Initial guess from search grid ---
         sx = self._search_x.ravel()
         sy = self._search_y.ravel()
@@ -517,7 +574,7 @@ class ParametricBivariateSpline:
 
         if not compute_gradients:
             if self.log_z:
-                z = np.exp(z)
+                z = np.pow(10, z)
             return z
 
         # --- Gradients via implicit function theorem ---
@@ -531,12 +588,12 @@ class ParametricBivariateSpline:
             grad_xy = np.array([np.nan, np.nan])
 
         if self.log_z:
-            z = np.exp(z)
-            grad_xy *= z
+            z = np.pow(10, z)
+            grad_xy *= z * np.log(10)
         if self.log_x:
-            grad_xy[0] /= x
+            grad_xy[0] /= (x_phys * np.log(10))
         if self.log_y:
-            grad_xy[1] /= y
+            grad_xy[1] /= (y_phys * np.log(10))
 
         return z, (float(grad_xy[0]), float(grad_xy[1]))
 
@@ -561,10 +618,19 @@ class ParametricBivariateSpline:
         X, Y, Z : 2-D arrays of shape (Nx, Ny)
         dZdX, dZdY : 2-D arrays of shape (Nx, Ny), only if compute_gradients=True.
         """
+        # --- Convert to log-space for internal search ---------------------
+        x_phys_vals = np.asarray(x_vals, dtype=float)
+        y_phys_vals = np.asarray(y_vals, dtype=float)
+        if self.log_x: x_vals = np.log10(x_phys_vals)
+        if self.log_y: y_vals = np.log10(y_phys_vals)
+
         X, Y = np.meshgrid(x_vals, y_vals, indexing='ij')
+        X_phys, Y_phys = np.meshgrid(x_phys_vals, y_phys_vals, indexing='ij')
         shape = X.shape
         x_flat = X.ravel()
         y_flat = Y.ravel()
+        x_phys_flat = X_phys.ravel()
+        y_phys_flat = Y_phys.ravel()
         n = len(x_flat)
 
         # --- Vectorized initial guess ------------------------------------
@@ -656,13 +722,13 @@ class ParametricBivariateSpline:
                     if compute_gradients:
                         z_ext, (dzdx_ext, dzdy_ext) = result
                         if z_ext is not None:
-                            Z_flat[fi] = np.log(z_ext) if self.log_z else z_ext
+                            Z_flat[fi] = np.log10(z_ext) if self.log_z else z_ext
                             extrap_cache[fi] = (dzdx_ext, dzdy_ext)
                         else:
                             Z_flat[fi] = np.nan
                     else:
                         if result is not None:
-                            Z_flat[fi] = np.log(result) if self.log_z else result
+                            Z_flat[fi] = np.log10(result) if self.log_z else result
                         else:
                             Z_flat[fi] = np.nan
             else:
@@ -670,9 +736,9 @@ class ParametricBivariateSpline:
 
         if not compute_gradients:
             if self.log_z:
-                Z_flat = np.exp(Z_flat)
+                Z_flat = np.pow(10, Z_flat)
 
-            return X, Y, Z_flat.reshape(shape)
+            return X_phys, Y_phys, Z_flat.reshape(shape)
 
         # --- Gradients via implicit function theorem ---------------------
         dzdx_flat = np.full(n, np.nan)
@@ -710,16 +776,20 @@ class ParametricBivariateSpline:
                 dzdy_flat[fi] = dzdy_ext
 
         if self.log_z:
-            Z_flat = np.exp(Z_flat)
+            Z_flat = np.pow(10, Z_flat)
             # Only apply log_z correction to converged points — extrapolated
             # gradients already have it baked in from _extrapolate_point
             if conv.any():
-                dzdx_flat[conv] *= Z_flat[conv]
-                dzdy_flat[conv] *= Z_flat[conv]
+                dzdx_flat[conv] *= Z_flat[conv] * np.log(10)
+                dzdy_flat[conv] *= Z_flat[conv] * np.log(10)
+        # Only apply log_x/log_y correction to converged points —
+        # extrapolated gradients already have it baked in from _extrapolate_point
         if self.log_x:
-            dzdx_flat /= x_flat
+            if conv.any():
+                dzdx_flat[conv] /= (x_phys_flat[conv] * np.log(10))
         if self.log_y:
-            dzdy_flat /= y_flat
+            if conv.any():
+                dzdy_flat[conv] /= (y_phys_flat[conv] * np.log(10))
 
-        return (X, Y, Z_flat.reshape(shape),
+        return (X_phys, Y_phys, Z_flat.reshape(shape),
                 dzdx_flat.reshape(shape), dzdy_flat.reshape(shape))
