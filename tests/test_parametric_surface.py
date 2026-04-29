@@ -771,6 +771,432 @@ class TestExtrapolation(unittest.TestCase):
         self.assertIsNotNone(z)
         self.assertTrue(np.isfinite(z))
 
+# =============================================================================
+# 7. LOG-SCALE TESTS
+# =============================================================================
+
+def get_log_z_surface_data():
+    """
+    Surface with log10-z control points.
+    cp_z = log10(10 + GU + GV) to ensure all z > 0 in physical space.
+    """
+    tu = np.array([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0])
+    tv = np.array([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0])
+    ku, kv = 3, 3
+
+    gu = np.array([0.0, 0.16666667, 0.5, 0.83333333, 1.0])
+    gv = np.array([0.0, 0.16666667, 0.5, 0.83333333, 1.0])
+    GU, GV = np.meshgrid(gu, gv, indexing='ij')
+
+    cp = np.zeros((5, 5, 3))
+    cp[:, :, 0] = GU                        # x = u (linear)
+    cp[:, :, 1] = GV                        # y = v (linear)
+    cp[:, :, 2] = np.log10(10 + GU + GV)    # z in log10 space
+
+    return tu, tv, cp, ku, kv
+
+
+def get_log_xyz_surface_data():
+    """
+    Surface where all three axes are in log10 space.
+    x_phys in [10, 1000], y_phys in [1, 100], z_phys > 0.
+    """
+    tu = np.array([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0])
+    tv = np.array([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0])
+    ku, kv = 3, 3
+
+    gu = np.array([0.0, 0.16666667, 0.5, 0.83333333, 1.0])
+    gv = np.array([0.0, 0.16666667, 0.5, 0.83333333, 1.0])
+    GU, GV = np.meshgrid(gu, gv, indexing='ij')
+
+    # Map u -> log10(x_phys): x_phys in [10, 1000] => log10 in [1, 3]
+    log_x = 1.0 + 2.0 * GU
+    # Map v -> log10(y_phys): y_phys in [1, 100] => log10 in [0, 2]
+    log_y = 2.0 * GV
+    # z in log10-space
+    log_z = np.log10(10 + 10**log_x * 0.01 + 10**log_y * 0.1)
+
+    cp = np.zeros((5, 5, 3))
+    cp[:, :, 0] = log_x
+    cp[:, :, 1] = log_y
+    cp[:, :, 2] = log_z
+
+    return tu, tv, cp, ku, kv
+
+
+class TestLogZScale(unittest.TestCase):
+
+    def setUp(self):
+        tu, tv, cp, ku, kv = get_log_z_surface_data()
+        self.surf = ParametricBivariateSpline(tu, tv, cp, ku, kv, log_z=True)
+        # Reference surface without log for comparison of control points
+        self.tu, self.tv, self.cp, self.ku, self.kv = tu, tv, cp, ku, kv
+
+    def test_direct_call_returns_physical_scale(self):
+        """__call__ with log_z should return z in physical scale (10^w), not log."""
+        u_ref, v_ref = 0.5, 0.5
+        x, y, z = self.surf(u_ref, v_ref)
+        # The CPs encode z = log10(10 + u + v).  At the Greville abscissae
+        # the spline interpolates approximately, so z_phys ≈ 10 + 0.5 + 0.5 = 11.
+        # The raw spline value is ~log10(11) ≈ 1.04; physical must be >> 1.
+        self.assertGreater(z, 5.0, "z should be in physical scale, not log")
+        # More precisely, the physical value should be near 10^log10(11) = 11
+        self.assertAlmostEqual(z, 11.0, delta=1.0)
+
+    def test_eval_point_log_z_roundtrip(self):
+        """eval_point with log_z should return 10^(spline_z) for interior points."""
+        u_ref, v_ref = 0.4, 0.6
+        x_ref, y_ref, z_ref = self.surf(u_ref, v_ref)
+        # z_ref is already in physical space (10^w) (confirmed by the previous test)
+        z = self.surf.eval_point(x_ref, y_ref)
+        self.assertIsNotNone(z)
+        self.assertAlmostEqual(z, z_ref, places=6)
+
+    def test_eval_grid_log_z_roundtrip(self):
+        """eval_grid with log_z should match eval_point for interior points."""
+        x_vals = np.linspace(0.2, 0.8, 4)
+        y_vals = np.linspace(0.2, 0.8, 3)
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals)
+
+        for i, xv in enumerate(x_vals):
+            for j, yv in enumerate(y_vals):
+                z_point = self.surf.eval_point(xv, yv)
+                self.assertAlmostEqual(Z[i, j], z_point, places=6,
+                    msg=f"Mismatch at ({xv}, {yv})")
+
+    def test_eval_point_extrapolation_log_z(self):
+        """Extrapolation with log_z should return finite positive values."""
+        z = self.surf.eval_point(1.1, 0.5, extrapolate=True)
+        self.assertIsNotNone(z)
+        self.assertTrue(np.isfinite(z))
+        self.assertGreater(z, 0)
+
+    def test_eval_grid_extrapolation_log_z(self):
+        """eval_grid extrapolation with log_z should match eval_point."""
+        x_vals = np.linspace(0.8, 1.2, 5)
+        y_vals = np.linspace(0.4, 0.6, 3)
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals, extrapolate=True)
+        self.assertTrue(np.all(np.isfinite(Z)))
+
+        # Verify every grid value matches eval_point
+        for i, xv in enumerate(x_vals):
+            for j, yv in enumerate(y_vals):
+                z_point = self.surf.eval_point(xv, yv, extrapolate=True)
+                self.assertAlmostEqual(Z[i, j], z_point, places=6,
+                    msg=f"Mismatch at ({xv:.2f}, {yv:.2f})")
+
+    def test_eval_point_gradient_log_z_vs_finite_diff(self):
+        """Gradient with log_z should match finite differences on physical z."""
+        x, y = 0.5, 0.5
+        z, (dzdx, dzdy) = self.surf.eval_point(x, y, compute_gradients=True)
+
+        eps = 1e-6
+        z_xp = self.surf.eval_point(x + eps, y)
+        z_xm = self.surf.eval_point(x - eps, y)
+        dzdx_fd = (z_xp - z_xm) / (2 * eps)
+
+        z_yp = self.surf.eval_point(x, y + eps)
+        z_ym = self.surf.eval_point(x, y - eps)
+        dzdy_fd = (z_yp - z_ym) / (2 * eps)
+
+        self.assertAlmostEqual(dzdx, dzdx_fd, places=4,
+            msg=f"dzdx: analytic={dzdx}, fd={dzdx_fd}")
+        self.assertAlmostEqual(dzdy, dzdy_fd, places=4,
+            msg=f"dzdy: analytic={dzdy}, fd={dzdy_fd}")
+
+    def test_eval_grid_gradient_log_z_vs_eval_point(self):
+        """eval_grid gradients with log_z should match eval_point gradients."""
+        x_vals = np.array([0.3, 0.5, 0.7])
+        y_vals = np.array([0.3, 0.7])
+        X, Y, Z, dZdX, dZdY = self.surf.eval_grid(
+            x_vals, y_vals, compute_gradients=True)
+
+        for i, xv in enumerate(x_vals):
+            for j, yv in enumerate(y_vals):
+                _, (gx, gy) = self.surf.eval_point(xv, yv, compute_gradients=True)
+                self.assertAlmostEqual(dZdX[i, j], gx, places=5)
+                self.assertAlmostEqual(dZdY[i, j], gy, places=5)
+
+    def test_extrapolation_gradient_log_z_vs_finite_diff(self):
+        """Extrapolated gradient with log_z should match finite differences."""
+        x, y = 1.1, 0.5
+        z, (dzdx, dzdy) = self.surf.eval_point(
+            x, y, extrapolate=True, compute_gradients=True)
+        self.assertIsNotNone(z)
+        self.assertIsNotNone(dzdx)
+        self.assertIsNotNone(dzdy)
+
+        eps = 1e-5
+        z_xp = self.surf.eval_point(x + eps, y, extrapolate=True)
+        z_xm = self.surf.eval_point(x - eps, y, extrapolate=True)
+        dzdx_fd = (z_xp - z_xm) / (2 * eps)
+
+        z_yp = self.surf.eval_point(x, y + eps, extrapolate=True)
+        z_ym = self.surf.eval_point(x, y - eps, extrapolate=True)
+        dzdy_fd = (z_yp - z_ym) / (2 * eps)
+
+        self.assertAlmostEqual(dzdx, dzdx_fd, places=3)
+        self.assertAlmostEqual(dzdy, dzdy_fd, places=3)
+
+    def test_extrapolation_c0_continuity(self):
+        """Physical z should be continuous across the boundary with log_z."""
+        # --- x direction (crossing u_max boundary) ---
+        x_b, y_b, _ = self.surf(1.0, 0.5)
+        steps = np.linspace(-0.01, 0.01, 20)
+        z_vals = []
+        for s in steps:
+            z = self.surf.eval_point(x_b + s, y_b, extrapolate=True)
+            z_vals.append(z)
+        z_diffs_x = np.abs(np.diff(z_vals))
+        self.assertTrue(np.all(z_diffs_x < 0.5),
+            f"C0 x-discontinuity: max jump = {z_diffs_x.max():.6f}")
+
+        # --- y direction (crossing v_max boundary) ---
+        x_b, y_b, _ = self.surf(0.5, 1.0)
+        z_vals_y = []
+        for s in steps:
+            z = self.surf.eval_point(x_b, y_b + s, extrapolate=True)
+            z_vals_y.append(z)
+        z_diffs_y = np.abs(np.diff(z_vals_y))
+        self.assertTrue(np.all(z_diffs_y < 0.5),
+            f"C0 y-discontinuity: max jump = {z_diffs_y.max():.6f}")
+
+    def test_extrapolation_c1_continuity(self):
+        """Gradients should be continuous across the boundary with log_z."""
+        eps = 1e-6
+
+        # --- x direction (crossing u_max boundary) ---
+        x_b, y_b, _ = self.surf(1.0, 0.5)
+        _, (gx_in, gy_in) = self.surf.eval_point(
+            x_b - eps, y_b, compute_gradients=True)
+        _, (gx_out, gy_out) = self.surf.eval_point(
+            x_b + eps, y_b, extrapolate=True, compute_gradients=True)
+        self.assertAlmostEqual(gx_in, gx_out, places=2,
+            msg=f"x-boundary dzdx: interior={gx_in}, exterior={gx_out}")
+        self.assertAlmostEqual(gy_in, gy_out, places=2,
+            msg=f"x-boundary dzdy: interior={gy_in}, exterior={gy_out}")
+
+        # --- y direction (crossing v_max boundary) ---
+        x_b, y_b, _ = self.surf(0.5, 1.0)
+        _, (gx_in, gy_in) = self.surf.eval_point(
+            x_b, y_b - eps, compute_gradients=True)
+        _, (gx_out, gy_out) = self.surf.eval_point(
+            x_b, y_b + eps, extrapolate=True, compute_gradients=True)
+        self.assertAlmostEqual(gx_in, gx_out, places=2,
+            msg=f"y-boundary dzdx: interior={gx_in}, exterior={gx_out}")
+        self.assertAlmostEqual(gy_in, gy_out, places=2,
+            msg=f"y-boundary dzdy: interior={gy_in}, exterior={gy_out}")
+
+    def test_extrapolation_c2_continuity(self):
+        """Second derivative should be continuous across the boundary with log_z."""
+        eps = 1e-4
+
+        # --- x direction (crossing u_max boundary) ---
+        x_b, y_b, _ = self.surf(1.0, 0.5)
+        _, (g1_x, _) = self.surf.eval_point(
+            x_b + eps, y_b, extrapolate=True, compute_gradients=True)
+        _, (g2_x, _) = self.surf.eval_point(
+            x_b + 2*eps, y_b, extrapolate=True, compute_gradients=True)
+        d2zdx2_ext = (g2_x - g1_x) / eps
+        _, (g0_x, _) = self.surf.eval_point(
+            x_b - eps, y_b, compute_gradients=True)
+        d2zdx2_int = (g1_x - g0_x) / (2 * eps)
+        self.assertAlmostEqual(d2zdx2_ext, d2zdx2_int, places=1,
+            msg=f"x-boundary d2zdx2: interior={d2zdx2_int}, exterior={d2zdx2_ext}")
+
+        # --- y direction (crossing v_max boundary) ---
+        x_b, y_b, _ = self.surf(0.5, 1.0)
+        _, (_, g1_y) = self.surf.eval_point(
+            x_b, y_b + eps, extrapolate=True, compute_gradients=True)
+        _, (_, g2_y) = self.surf.eval_point(
+            x_b, y_b + 2*eps, extrapolate=True, compute_gradients=True)
+        d2zdy2_ext = (g2_y - g1_y) / eps
+        _, (_, g0_y) = self.surf.eval_point(
+            x_b, y_b - eps, compute_gradients=True)
+        d2zdy2_int = (g1_y - g0_y) / (2 * eps)
+        self.assertAlmostEqual(d2zdy2_ext, d2zdy2_int, places=1,
+            msg=f"y-boundary d2zdy2: interior={d2zdy2_int}, exterior={d2zdy2_ext}")
+
+
+class TestLogXYZScale(unittest.TestCase):
+
+    def setUp(self):
+        tu, tv, cp, ku, kv = get_log_xyz_surface_data()
+        self.surf = ParametricBivariateSpline(
+            tu, tv, cp, ku, kv, log_x=True, log_y=True, log_z=True)
+
+    def test_direct_call_returns_physical_scale(self):
+        """__call__ with log_x/y/z should return all coords in physical scale."""
+        u_ref, v_ref = 0.5, 0.5
+        x, y, z = self.surf(u_ref, v_ref)
+        # At u=0.5: log_x = 1 + 2*0.5 = 2, so x_phys = 10^2 = 100
+        self.assertAlmostEqual(x, 100.0, delta=10.0)
+        # At v=0.5: log_y = 2*0.5 = 1, so y_phys = 10^1 = 10
+        self.assertAlmostEqual(y, 10.0, delta=2.0)
+        # z_phys = 10^log10(10 + 100*0.01 + 10*0.1) = 10 + 1 + 1 = 12
+        self.assertAlmostEqual(z, 12.0, delta=2.0)
+
+    def test_eval_point_returns_physical_coordinates(self):
+        """eval_point should accept physical x,y and return physical z."""
+        # Physical coordinates: x=100, y=10 (corresponding to u≈0.5, v≈0.5)
+        u_ref, v_ref = 0.5, 0.5
+        x_phys, y_phys, z_expected = self.surf(u_ref, v_ref)
+        z = self.surf.eval_point(x_phys, y_phys)
+        self.assertIsNotNone(z)
+        # z must be in physical scale (>> 1), not log scale (~1)
+        self.assertGreater(z, 5.0, "z should be in physical scale")
+        self.assertAlmostEqual(z, z_expected, places=5)
+
+    def test_eval_point_log_xyz_roundtrip(self):
+        """eval_point with log_x/log_y/log_z should recover __call__ values."""
+        u_ref, v_ref = 0.4, 0.6
+        x_ref, y_ref, z_ref = self.surf(u_ref, v_ref)
+        z = self.surf.eval_point(x_ref, y_ref)
+        self.assertIsNotNone(z)
+        self.assertAlmostEqual(z, z_ref, places=5)
+
+    def test_eval_grid_log_xyz_roundtrip(self):
+        """eval_grid with log_x/log_y/log_z should match eval_point."""
+        # Physical x in [10, 1000], y in [1, 100]
+        u_refs = [0.3, 0.5, 0.7]
+        v_refs = [0.3, 0.7]
+        x_vals = np.array([float(self.surf(u, 0.5)[0]) for u in u_refs])
+        y_vals = np.array([float(self.surf(0.5, v)[1]) for v in v_refs])
+
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals)
+
+        # X, Y should be in physical space
+        self.assertTrue(np.all(X > 1))   # x_phys > 1
+        self.assertTrue(np.all(Y > 0.5)) # y_phys > 0.5
+
+        for i, xv in enumerate(x_vals):
+            for j, yv in enumerate(y_vals):
+                z_point = self.surf.eval_point(xv, yv)
+                if z_point is not None:
+                    self.assertAlmostEqual(Z[i, j], z_point, places=5,
+                        msg=f"Mismatch at ({xv:.2f}, {yv:.2f})")
+
+    def test_eval_point_gradient_log_xyz_vs_finite_diff(self):
+        """Gradient with all log scales vs finite differences."""
+        u_ref, v_ref = 0.5, 0.5
+        x, y, z_ref = self.surf(u_ref, v_ref)
+        z, (dzdx, dzdy) = self.surf.eval_point(x, y, compute_gradients=True)
+
+        eps_x = x * 1e-5  # relative epsilon for log-space
+        eps_y = y * 1e-5
+
+        z_xp = self.surf.eval_point(x + eps_x, y)
+        z_xm = self.surf.eval_point(x - eps_x, y)
+        dzdx_fd = (z_xp - z_xm) / (2 * eps_x)
+
+        z_yp = self.surf.eval_point(x, y + eps_y)
+        z_ym = self.surf.eval_point(x, y - eps_y)
+        dzdy_fd = (z_yp - z_ym) / (2 * eps_y)
+
+        self.assertAlmostEqual(dzdx, dzdx_fd, places=3,
+            msg=f"dzdx: analytic={dzdx}, fd={dzdx_fd}")
+        self.assertAlmostEqual(dzdy, dzdy_fd, places=3,
+            msg=f"dzdy: analytic={dzdy}, fd={dzdy_fd}")
+
+    def test_eval_grid_returns_physical_coordinates(self):
+        """eval_grid X, Y outputs should be in physical (not log) space."""
+        x_vals = np.array([100.0, 500.0])
+        y_vals = np.array([10.0, 50.0])
+        X, Y, Z = self.surf.eval_grid(x_vals, y_vals)
+        np.testing.assert_allclose(X[:, 0], x_vals)
+        np.testing.assert_allclose(Y[0, :], y_vals)
+
+    def test_extrapolation_log_xyz(self):
+        """Extrapolation with all log scales should produce finite results."""
+        # Get a point just outside the domain
+        x_b, y_b, _ = self.surf(1.0, 0.5)
+        z = self.surf.eval_point(x_b * 1.5, y_b, extrapolate=True)
+        self.assertIsNotNone(z)
+        self.assertTrue(np.isfinite(z))
+        self.assertGreater(z, 0)
+
+    def test_extrapolation_c0_continuity(self):
+        """Physical z should be continuous across boundary with all log scales."""
+        # Use multiplicative steps since we're in log-space
+        factors = np.linspace(0.99, 1.01, 20)
+
+        # --- x direction (crossing u_max boundary) ---
+        x_b, y_b, _ = self.surf(1.0, 0.5)
+        z_vals_x = []
+        for f in factors:
+            z = self.surf.eval_point(x_b * f, y_b, extrapolate=True)
+            z_vals_x.append(z)
+        z_diffs_x = np.abs(np.diff(z_vals_x))
+        self.assertTrue(np.all(z_diffs_x < 1.0),
+            f"C0 x-discontinuity: max jump = {z_diffs_x.max():.6f}")
+
+        # --- y direction (crossing v_max boundary) ---
+        x_b, y_b, _ = self.surf(0.5, 1.0)
+        z_vals_y = []
+        for f in factors:
+            z = self.surf.eval_point(x_b, y_b * f, extrapolate=True)
+            z_vals_y.append(z)
+        z_diffs_y = np.abs(np.diff(z_vals_y))
+        self.assertTrue(np.all(z_diffs_y < 1.0),
+            f"C0 y-discontinuity: max jump = {z_diffs_y.max():.6f}")
+
+    def test_extrapolation_c1_continuity(self):
+        """Gradients should be continuous across boundary with all log scales."""
+        # --- x direction (crossing u_max boundary) ---
+        x_b, y_b, _ = self.surf(1.0, 0.5)
+        eps_x = x_b * 1e-5  # relative epsilon for log-scale x
+        _, (gx_in, gy_in) = self.surf.eval_point(
+            x_b - eps_x, y_b, compute_gradients=True)
+        _, (gx_out, gy_out) = self.surf.eval_point(
+            x_b + eps_x, y_b, extrapolate=True, compute_gradients=True)
+        self.assertAlmostEqual(gx_in, gx_out, places=2,
+            msg=f"x-boundary dzdx: interior={gx_in}, exterior={gx_out}")
+        self.assertAlmostEqual(gy_in, gy_out, places=2,
+            msg=f"x-boundary dzdy: interior={gy_in}, exterior={gy_out}")
+
+        # --- y direction (crossing v_max boundary) ---
+        x_b, y_b, _ = self.surf(0.5, 1.0)
+        eps_y = y_b * 1e-5  # relative epsilon for log-scale y
+        _, (gx_in, gy_in) = self.surf.eval_point(
+            x_b, y_b - eps_y, compute_gradients=True)
+        _, (gx_out, gy_out) = self.surf.eval_point(
+            x_b, y_b + eps_y, extrapolate=True, compute_gradients=True)
+        self.assertAlmostEqual(gx_in, gx_out, places=2,
+            msg=f"y-boundary dzdx: interior={gx_in}, exterior={gx_out}")
+        self.assertAlmostEqual(gy_in, gy_out, places=2,
+            msg=f"y-boundary dzdy: interior={gy_in}, exterior={gy_out}")
+
+    def test_extrapolation_c2_continuity(self):
+        """Second derivative should be continuous across boundary with all log scales."""
+        # --- x direction (crossing u_max boundary) ---
+        x_b, y_b, _ = self.surf(1.0, 0.5)
+        eps_x = x_b * 1e-4  # relative epsilon
+        _, (g1_x, _) = self.surf.eval_point(
+            x_b + eps_x, y_b, extrapolate=True, compute_gradients=True)
+        _, (g2_x, _) = self.surf.eval_point(
+            x_b + 2*eps_x, y_b, extrapolate=True, compute_gradients=True)
+        d2zdx2_ext = (g2_x - g1_x) / eps_x
+        _, (g0_x, _) = self.surf.eval_point(
+            x_b - eps_x, y_b, compute_gradients=True)
+        d2zdx2_int = (g1_x - g0_x) / (2 * eps_x)
+        self.assertAlmostEqual(d2zdx2_ext, d2zdx2_int, places=1,
+            msg=f"x-boundary d2zdx2: interior={d2zdx2_int}, exterior={d2zdx2_ext}")
+
+        # --- y direction (crossing v_max boundary) ---
+        x_b, y_b, _ = self.surf(0.5, 1.0)
+        eps_y = y_b * 1e-4  # relative epsilon
+        _, (_, g1_y) = self.surf.eval_point(
+            x_b, y_b + eps_y, extrapolate=True, compute_gradients=True)
+        _, (_, g2_y) = self.surf.eval_point(
+            x_b, y_b + 2*eps_y, extrapolate=True, compute_gradients=True)
+        d2zdy2_ext = (g2_y - g1_y) / eps_y
+        _, (_, g0_y) = self.surf.eval_point(
+            x_b, y_b - eps_y, compute_gradients=True)
+        d2zdy2_int = (g1_y - g0_y) / (2 * eps_y)
+        self.assertAlmostEqual(d2zdy2_ext, d2zdy2_int, places=1,
+            msg=f"y-boundary d2zdy2: interior={d2zdy2_int}, exterior={d2zdy2_ext}")
+
+
 if __name__ == '__main__':
     unittest.main()
 

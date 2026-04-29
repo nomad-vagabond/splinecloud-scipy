@@ -137,8 +137,8 @@ class APIClientTests(unittest.TestCase):
         self.assertIsInstance(surface, ParametricBivariateSpline)
         
         self.assertEqual(surface.x_label, "alpha")
-        self.assertEqual(surface.y_label, "beta")
-        self.assertEqual(surface.z_label, "gamma")
+        self.assertEqual(surface.y_label, "gamma") # y and z must be flipped for 'lofted' surfaces
+        self.assertEqual(surface.z_label, "beta") # y and z must be flipped for 'lofted' surfaces
         
         self.assertEqual(surface.subset_uids, ["sbt_ABCD", "sbt_EFGH", "sbt_IJKL", "sbt_MNOP"])
         self.assertEqual(surface.relation_uid, "lr2_qwerty")
