@@ -23,16 +23,13 @@ class SplineSurface(ParametricBivariateSpline):
         ku = int(sp["ku"])
         kv = int(sp["kv"])
 
-        log_x = data.get("scale_x") == "Logarithmic"
-        log_y = data.get("scale_y") == "Logarithmic"
-        log_z = data.get("scale_z") == "Logarithmic"
-
-        self.flip_yz = data.get("surface_type") == "lofted"
+        log_x1 = data.get("scale_x1") == "Logarithmic"
+        log_x2 = data.get("scale_x2") == "Logarithmic"
+        log_y  = data.get("scale_y")  == "Logarithmic"
 
         super().__init__(
             tu, tv, cp, ku, kv, w=w,
-            log_x=log_x, log_y=log_y, log_z=log_z,
-            flip_yz=self.flip_yz,
+            log_x1=log_x1, log_x2=log_x2, log_y=log_y,
         )
 
         # Identification and Metadata
@@ -43,16 +40,16 @@ class SplineSurface(ParametricBivariateSpline):
 
         # Relational data
         self.subset_uids = data.get("subset_uids", [])
-        self.z_values = data.get("z_values", [])
+        self.x2_values = data.get("x2_values", [])
         self.curve_uids = data.get("curve_uids", [])
         self.relation_uid = data.get("relation_uid")
         self.relation_name = data.get("relation_name")
 
         # Labels
         labels = data.get("labels", {})
-        self.x_label = labels.get("xlabel")
-        self.y_label = labels.get("zlabel") if self.flip_yz else labels.get("ylabel")
-        self.z_label = labels.get("ylabel") if self.flip_yz else labels.get("zlabel")
+        self.x1_label = labels.get("x1")
+        self.x2_label = labels.get("x2")
+        self.y_label  = labels.get("y")
 
         self.subsets = []
 
@@ -79,14 +76,13 @@ class SplineSurface(ParametricBivariateSpline):
         """
         Load and assemble raw data points from all associated subsets.
         
-        The data is transformed according to the `flip_yz` attribute. For 
-        lofted surfaces (`flip_yz=True`), the relational Z-coordinate 
-        (lofting parameter) is mapped to the Y axis of the result.
+        Each subset contains (x1, y) data points. The x2 coordinate for
+        each subset is taken from `x2_values`.
 
         Returns
         -------
         labels : list of str
-            A list of [x, y, z] coordinate labels.
+            A list of [x1, x2, y] coordinate labels.
         data : ndarray
             An (N, 3) array of collected data points.
         """
@@ -97,12 +93,9 @@ class SplineSurface(ParametricBivariateSpline):
         for i, item in enumerate(self.subsets):
             subset_data = item[1]
             for point in subset_data:
-                if self.flip_yz:
-                    data.append([point[0], self.z_values[i], point[1]])
-                else:
-                    data.append([point[0], point[1], self.z_values[i]])
+                data.append([point[0], self.x2_values[i], point[1]])
         
-        return [self.x_label, self.y_label, self.z_label], np.array(data)
+        return [self.x1_label, self.x2_label, self.y_label], np.array(data)
 
 
 # =============================================================================
