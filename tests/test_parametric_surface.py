@@ -700,10 +700,23 @@ class TestExtrapolation(unittest.TestCase):
         _, (g0_x1, _) = self.surf.eval_point(x1_b - eps, x2_b, compute_gradients=True)
         # Central difference across the boundary using extrapolated gradient
         d2ydx12_int = (g1_x1 - g0_x1) / (2 * eps)
-
-        # TODO: check g2 continuity in the x2 direction as well
-        
         self.assertAlmostEqual(d2ydx12_ext, d2ydx12_int, places=2)
+
+        # --- x2 direction (crossing v_max boundary) ---
+        x1_b, x2_b, _ = self.surf(0.5, 1.0)
+        
+        _, (_, g1_x2) = self.surf.eval_point(x1_b, x2_b + eps, extrapolate=True, compute_gradients=True)
+        _, (_, g2_x2) = self.surf.eval_point(x1_b, x2_b + 2*eps, extrapolate=True, compute_gradients=True)
+        
+        # Finite difference of gradients (2nd derivative)
+        d2ydx22_ext = (g2_x2 - g1_x2) / eps
+        
+        # Interior 2nd derivative at boundary
+        _, (_, g0_x2) = self.surf.eval_point(x1_b, x2_b - eps, compute_gradients=True)
+        # Central difference across the boundary using extrapolated gradient
+        d2ydx22_int = (g1_x2 - g0_x2) / (2 * eps)
+        
+        self.assertAlmostEqual(d2ydx22_ext, d2ydx22_int, places=2)
 
     def test_corner_extrapolation(self):
         # Call eval_point with extrapolate=True on a point outside both
@@ -892,7 +905,7 @@ class TestLogYScale(unittest.TestCase):
             y_val = self.surf.eval_point(x1_b + s, x2_b, extrapolate=True)
             y_vals_x.append(y_val)
         y_diffs_x = np.abs(np.diff(y_vals_x))
-        self.assertTrue(np.all(y_diffs_x < 0.5), ## TODO: 0.5 seems too high. check it
+        self.assertTrue(np.all(y_diffs_x < 0.05),
             f"C0 x-discontinuity: max jump = {y_diffs_x.max():.6f}")
 
         # --- x2 direction (crossing v_max boundary) ---
@@ -902,7 +915,7 @@ class TestLogYScale(unittest.TestCase):
             y_val = self.surf.eval_point(x1_b, x2_b + s, extrapolate=True)
             y_vals_y.append(y_val)
         y_diffs_y = np.abs(np.diff(y_vals_y))
-        self.assertTrue(np.all(y_diffs_y < 0.5),  ## TODO: 0.5 seems too high. check it
+        self.assertTrue(np.all(y_diffs_y < 0.05),
             f"C0 y-discontinuity: max jump = {y_diffs_y.max():.6f}")
 
     def test_extrapolation_c1_continuity(self):
@@ -1067,7 +1080,7 @@ class TestLogX1X2YScale(unittest.TestCase):
             y_val = self.surf.eval_point(x1_b * f, x2_b, extrapolate=True)
             y_vals_x.append(y_val)
         y_diffs_x = np.abs(np.diff(y_vals_x))
-        self.assertTrue(np.all(y_diffs_x < 1.0), # TODO: value of 1.0 might be too high. check
+        self.assertTrue(np.all(y_diffs_x < 0.05),
             f"C0 x-discontinuity: max jump = {y_diffs_x.max():.6f}")
 
         # --- y direction (crossing v_max boundary) ---
@@ -1077,7 +1090,7 @@ class TestLogX1X2YScale(unittest.TestCase):
             y_val = self.surf.eval_point(x1_b, x2_b * f, extrapolate=True)
             y_vals_y.append(y_val)
         y_diffs_y = np.abs(np.diff(y_vals_y))
-        self.assertTrue(np.all(y_diffs_y < 1.0),  # TODO: value of 1.0 might be too high. check
+        self.assertTrue(np.all(y_diffs_y < 0.05),
             f"C0 y-discontinuity: max jump = {y_diffs_y.max():.6f}")
 
     def test_extrapolation_c1_continuity(self):

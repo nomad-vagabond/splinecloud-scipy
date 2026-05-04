@@ -8,8 +8,10 @@ from splinecloud_scipy import (
     load_spline_surface, 
     SPLINECLOUD_API_URL, 
     ParametricUnivariateSpline, 
-    ParametricBivariateSpline
+    ParametricBivariateSpline,
+    SplineSurface
 )
+
 
 class APIClientTests(unittest.TestCase):
 
@@ -111,9 +113,9 @@ class APIClientTests(unittest.TestCase):
             },
             "surface_type": "lofted",
             "labels": {
-                "xlabel": "alpha",
-                "ylabel": "beta",
-                "zlabel": "gamma"
+                "x1": "alpha",
+                "y": "beta",
+                "x2": "gamma"
             },
             "subset_uids": [
                 "sbt_ABCD",
@@ -123,22 +125,21 @@ class APIClientTests(unittest.TestCase):
             ],
             "relation_uid": "lr2_qwerty",
             "relation_name": "Lofted Relation 1",
-            "scale_x": "Linear",
+            "scale_x1": "Linear",
             "scale_y": "Linear",
-            "scale_z": "Linear"
+            "scale_x2": "Linear"
         }
         
         responses.add(responses.GET, surface_url, json=surface_response, status=200)
         
         surface = load_spline_surface(surface_url)
         
-        from splinecloud_scipy import SplineSurface
         self.assertIsInstance(surface, SplineSurface)
         self.assertIsInstance(surface, ParametricBivariateSpline)
         
-        self.assertEqual(surface.x_label, "alpha")
-        self.assertEqual(surface.y_label, "gamma") # y and z must be flipped for 'lofted' surfaces
-        self.assertEqual(surface.z_label, "beta") # y and z must be flipped for 'lofted' surfaces
+        self.assertEqual(surface.x1_label, "alpha")
+        self.assertEqual(surface.y_label, "beta")
+        self.assertEqual(surface.x2_label, "gamma")
         
         self.assertEqual(surface.subset_uids, ["sbt_ABCD", "sbt_EFGH", "sbt_IJKL", "sbt_MNOP"])
         self.assertEqual(surface.relation_uid, "lr2_qwerty")
