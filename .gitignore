@@ -37,6 +37,8 @@ docs/_build/
 # Environments
 .env
 .venv
+.testvenv
+testvenv/
 env/
 venv/
 ENV/

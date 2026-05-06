@@ -1,6 +1,16 @@
 import unittest
 import responses
-from splinecloud_scipy import load_subset, load_spline, SPLINECLOUD_API_URL, ParametricUnivariateSpline
+import numpy as np
+
+from splinecloud_scipy import (
+    load_subset, 
+    load_spline, 
+    load_spline_surface, 
+    SPLINECLOUD_API_URL, 
+    ParametricUnivariateSpline, 
+    ParametricBivariateSpline,
+    SplineSurface
+)
 
 
 class APIClientTests(unittest.TestCase):
@@ -81,6 +91,58 @@ class APIClientTests(unittest.TestCase):
         cx, cy = zip(*control_points)
         self.assertEqual(spline.coeffs_x.tolist(), list(cx))
         self.assertEqual(spline.coeffs_y.tolist(), list(cy))
+
+    @responses.activate
+    def test_load_spline_surface(self):
+        surface_url = SPLINECLOUD_API_URL + '/surfaces/srf_1234567890abcdef'
+        
+        tu = [0, 0, 0, 1, 1, 1]
+        tv = [0, 0, 0, 1, 1, 1]
+        cp = np.zeros((3, 3, 3)).tolist()
+        w = np.ones((3, 3)).tolist()
+        
+        surface_response = {
+            "uid": "srf_1234567890abcdef",
+            "spline": {
+                "tu": tu,
+                "tv": tv,
+                "cp": cp,
+                "w": w,
+                "ku": 2,
+                "kv": 2
+            },
+            "surface_type": "lofted",
+            "labels": {
+                "x1": "alpha",
+                "y": "beta",
+                "x2": "gamma"
+            },
+            "subset_uids": [
+                "sbt_ABCD",
+                "sbt_EFGH",
+                "sbt_IJKL",
+                "sbt_MNOP"
+            ],
+            "relation_uid": "lr2_qwerty",
+            "relation_name": "Lofted Relation 1",
+            "scale_x1": "Linear",
+            "scale_y": "Linear",
+            "scale_x2": "Linear"
+        }
+        
+        responses.add(responses.GET, surface_url, json=surface_response, status=200)
+        
+        surface = load_spline_surface(surface_url)
+        
+        self.assertIsInstance(surface, SplineSurface)
+        self.assertIsInstance(surface, ParametricBivariateSpline)
+        
+        self.assertEqual(surface.x1_label, "alpha")
+        self.assertEqual(surface.y_label, "beta")
+        self.assertEqual(surface.x2_label, "gamma")
+        
+        self.assertEqual(surface.subset_uids, ["sbt_ABCD", "sbt_EFGH", "sbt_IJKL", "sbt_MNOP"])
+        self.assertEqual(surface.relation_uid, "lr2_qwerty")
 
 
 if __name__ == '__main__':
