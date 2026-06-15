@@ -105,8 +105,7 @@ class SplineSurface(ParametricBivariateSpline):
 def fill_array(table, subset, columns, num_rows):
     for ci, col_name in enumerate(columns):
         for ri in range(num_rows):
-            table[ri, ci] = subset[col_name][str(ri)]
-
+            table[ri, ci] = subset[col_name][ri]
 
 # =============================================================================
 # MAIN CLIENT FUNCTIONS
@@ -120,15 +119,20 @@ def load_subset(subset_id_or_url):
         subset_id = url_split[-1]
         if "sbt_" not in subset_id or len(subset_id) != 16:
             raise ValueError("Wrong subset id was specified")
-        url = SPLINECLOUD_API_URL+"/subsets/{}/".format(subset_id)
-    
-    response = requests.get(url)
-    subset = json.loads(response.content)['table']
+        url = SPLINECLOUD_API_URL + "/subsets/{}/".format(subset_id)
 
-    columns = list(subset.keys())
+    response = requests.get(url)
+    subset_raw = json.loads(response.content)['table']
+    columns = list(subset_raw.keys())
+
+    # Treat all column data as ordered sequences, ignoring any index keys
+    subset = {
+        col: list(vals.values()) if isinstance(vals, dict) else vals
+        for col, vals in subset_raw.items()
+    }
+
     num_rows = len(list(subset.values())[0])
     table = np.zeros((num_rows, len(columns)))
-
     try:
         fill_array(table, subset, columns, num_rows)
     except ValueError:
