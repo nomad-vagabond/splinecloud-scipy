@@ -509,6 +509,10 @@ class ParametricBivariateSpline:
         if self.log_x1: x1 = np.log10(x1)
         if self.log_x2: x2 = np.log10(x2)
 
+        # --- Knot domain boundaries ---
+        u_min, u_max = self.tu[self.ku], self.tu[-(self.ku + 1)]
+        v_min, v_max = self.tv[self.kv], self.tv[-(self.kv + 1)]
+
         # --- Initial guess from search grid ---
         sx1 = self._search_x1.ravel()
         sx2 = self._search_x2.ravel()
@@ -520,12 +524,16 @@ class ParametricBivariateSpline:
         u, v  = su[best], sv[best]
 
         # --- Newton's method — keep final Jacobian if needed ---
+        # Use relative tolerance to handle large physical-space values
+        tol_x1 = tol * (1 + abs(x1))
+        tol_x2 = tol * (1 + abs(x2))
+
         J = None
         for _ in range(max_iter):
             fx1 = float(bisplev(u, v, self._tck_x1)) - x1
             fx2 = float(bisplev(u, v, self._tck_x2)) - x2
 
-            if abs(fx1) < tol and abs(fx2) < tol:
+            if abs(fx1) < tol_x1 and abs(fx2) < tol_x2:
                 break
 
             dx1du = float(bisplev(u, v, self._tck_x1, dx=1, dy=0))
@@ -541,8 +549,8 @@ class ParametricBivariateSpline:
             except np.linalg.LinAlgError:
                 break
 
-            u = np.clip(u + delta[0], 0, 1)
-            v = np.clip(v + delta[1], 0, 1)
+            u = np.clip(u + delta[0], u_min, u_max)
+            v = np.clip(v + delta[1], v_min, v_max)
         else:
             ## no solution found (point may be ouside the defined domain)
             if extrapolate:
@@ -620,6 +628,10 @@ class ParametricBivariateSpline:
         x2_phys_flat = X2_phys.ravel()
         n = len(x1_flat)
 
+        # --- Knot domain boundaries ---
+        u_min, u_max = self.tu[self.ku], self.tu[-(self.ku + 1)]
+        v_min, v_max = self.tv[self.kv], self.tv[-(self.kv + 1)]
+
         # --- Vectorized initial guess ------------------------------------
         sx1 = self._search_x1.ravel()
         sx2 = self._search_x2.ravel()
@@ -636,6 +648,10 @@ class ParametricBivariateSpline:
         J_final = np.zeros((n, 2, 2)) if compute_gradients else None
 
         # --- Vectorized Newton -------------------------------------------
+        # Use relative tolerance to handle large physical-space values
+        tol_x1 = tol * (1 + np.abs(x1_flat))
+        tol_x2 = tol * (1 + np.abs(x2_flat))
+
         active = np.ones(n, dtype=bool)
 
         for _ in range(max_iter):
@@ -651,7 +667,7 @@ class ParametricBivariateSpline:
             fx2 = np.array([bisplev(ui, vi, self._tck_x2)
                         for ui, vi in zip(ua, va)]) - x2a
 
-            converged = (np.abs(fx1) < tol) & (np.abs(fx2) < tol)
+            converged = (np.abs(fx1) < tol_x1[idx]) & (np.abs(fx2) < tol_x2[idx])
             active[idx[converged]] = False
 
             still = ~converged
@@ -682,8 +698,8 @@ class ParametricBivariateSpline:
             du = np.where(safe, ( dx2dv * (-fx1) - dx1dv * (-fx2)) / det, 0.0)
             dv = np.where(safe, (-dx2du * (-fx1) + dx1du * (-fx2)) / det, 0.0)
 
-            u[idx[still]] = np.clip(u[idx[still]] + du, 0, 1)
-            v[idx[still]] = np.clip(v[idx[still]] + dv, 0, 1)
+            u[idx[still]] = np.clip(u[idx[still]] + du, u_min, u_max)
+            v[idx[still]] = np.clip(v[idx[still]] + dv, v_min, v_max)
 
         # --- Final y evaluation ------------------------------------------
         Y_flat = np.array([bisplev(ui, vi, self._tck_y)
