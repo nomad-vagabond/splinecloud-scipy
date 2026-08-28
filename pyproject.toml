@@ -15,7 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 keywords = ["splinecloud", "spline", "BSpline", "interpolation", "regression", "curve fitting"]
-dependencies = ['numpy', 'scipy', 'requests']
+dependencies = ['numpy', 'scipy', 'requests', 'splipy']
 requires-python = ">=3.9"
 
 [project.optional-dependencies]
