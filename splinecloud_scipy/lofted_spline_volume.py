@@ -83,7 +83,69 @@ class ParametricTrivariateSpline:
              consistency_threshold=0.5, distance_threshold=0.5, steepness_threshold=10,
              return_diagnostics=False):
         """
-        Evaluate y at physical (x1, x2, x3).
+        Evaluate y at physical (x1, x2, x3), scalar or array-like.
+
+        If x1, x2, x3 are all scalars, delegates directly to eval_point.
+        Otherwise, any array-like inputs are combined into a rectangular
+        grid via an outer product -- mirroring
+        ParametricBivariateSpline.eval's (x1, x2) grid convention, and
+        working even when the arrays have different lengths -- and
+        evaluated element-wise across that grid by looping eval_point,
+        since w, and thus the cross-section surface used for
+        extrapolation, generally differs per grid point along x3.
+
+        Returns
+        -------
+        y : float, or ndarray of shape (len(x1), len(x2), len(x3))
+            (scalar axes counted as length 1). Points where
+            extrapolation/inversion is refused are NaN (mirroring
+            ParametricBivariateSpline.eval_grid's convention).
+        diagnostics : dict, or object-ndarray of dicts matching the output
+            shape, only when return_diagnostics=True.
+        """
+        eval_params = dict(
+            tol=tol, max_iter=max_iter, extrapolate=extrapolate,
+            w_distance_threshold=w_distance_threshold,
+            limit_distance=limit_distance, limit_consistency=limit_consistency,
+            limit_steepness=limit_steepness, consistency_threshold=consistency_threshold,
+            distance_threshold=distance_threshold, steepness_threshold=steepness_threshold,
+        )
+
+        scalar_input = (not hasattr(x1, '__iter__') and not hasattr(x2, '__iter__')
+                         and not hasattr(x3, '__iter__'))
+        if scalar_input:
+            return self.eval_point(x1, x2, x3, return_diagnostics=return_diagnostics, **eval_params)
+
+        x1_vals = np.atleast_1d(np.asarray(x1, dtype=float))
+        x2_vals = np.atleast_1d(np.asarray(x2, dtype=float))
+        x3_vals = np.atleast_1d(np.asarray(x3, dtype=float))
+
+        X1, X2, X3 = np.meshgrid(x1_vals, x2_vals, x3_vals, indexing='ij')
+        shape = X1.shape
+        Y = np.empty(shape, dtype=float)
+        diagnostics = np.empty(shape, dtype=object) if return_diagnostics else None
+
+        for idx in np.ndindex(shape):
+            result = self.eval_point(X1[idx], X2[idx], X3[idx],
+                                      return_diagnostics=return_diagnostics, **eval_params)
+            if return_diagnostics:
+                y, diag = result
+                diagnostics[idx] = diag
+            else:
+                y = result
+            Y[idx] = np.nan if y is None else y
+
+        if return_diagnostics:
+            return Y, diagnostics
+        return Y
+
+    def eval_point(self, x1, x2, x3, tol=1e-10, max_iter=60, extrapolate=False,
+             w_distance_threshold=0.5,
+             limit_distance=False, limit_consistency=False, limit_steepness=False,
+             consistency_threshold=0.5, distance_threshold=0.5, steepness_threshold=10,
+             return_diagnostics=False):
+        """
+        Evaluate y at a single physical (x1, x2, x3) point.
 
         If extrapolate is False (default), (u, v, w) are clamped to the
         volume's parametric domain -- unchanged legacy behaviour.
