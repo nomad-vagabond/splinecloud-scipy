@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 from splipy import Surface
 
-from splinecloud_scipy import ParametricBivariateSpline, LoftedSplineVolume
+from splinecloud_scipy import ParametricBivariateSpline, LoftedSplineVolume, InterpolatedSplineVolume
 from splinecloud_scipy.lofted_spline_volume import pbs_to_splipy
 
 
@@ -332,6 +332,182 @@ class TestLoftedSplineVolumeHeterogeneousSurfaces(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             vol.eval(x1=0.13, x2=0.87, x3=5.0, extrapolate=True)
+
+
+class TestInterpolatedSplineVolume(unittest.TestCase):
+    """
+    Tests for InterpolatedSplineVolume, which evaluates each station
+    surface independently (via ParametricBivariateSpline.eval) and
+    interpolates along x3, instead of lofting into one true trivariate
+    volume like LoftedSplineVolume.
+    """
+
+    def setUp(self):
+        self.x3_values = np.array([0.0, 10.0, 20.0, 30.0, 40.0])
+        self.surfaces = [make_surface(x3) for x3 in self.x3_values]
+        self.vol = InterpolatedSplineVolume(self.surfaces, self.x3_values)
+
+    def test_constructor_rejects_length_mismatch(self):
+        with self.assertRaises(ValueError):
+            InterpolatedSplineVolume(self.surfaces, self.x3_values[:-1])
+
+    def test_constructor_rejects_non_increasing_stations(self):
+        with self.assertRaises(ValueError):
+            InterpolatedSplineVolume(self.surfaces, self.x3_values[::-1])
+
+    def test_constructor_rejects_invalid_surface_type(self):
+        with self.assertRaises(TypeError):
+            InterpolatedSplineVolume([123] + self.surfaces[1:], self.x3_values)
+
+    def test_constructor_accepts_mixed_object_and_uid_list(self):
+        """Unlike an all-str-or-all-object check, a mixed list must be accepted."""
+        mixed = [self.surfaces[0], self.surfaces[1]]
+        vol = InterpolatedSplineVolume(mixed, self.x3_values[:2])
+        self.assertEqual(len(vol.surfaces), 2)
+
+    def test_scalar_matches_at_stations_for_all_methods(self):
+        """At an exact station, all three methods must reproduce that station's own surface."""
+        surface, x3 = self.surfaces[2], self.x3_values[2]
+        expected = surface.eval_point(0.6, 0.4)
+        for method in ('pchip', 'spline', 'poly'):
+            y = self.vol.eval(0.6, 0.4, x3, method=method)
+            self.assertAlmostEqual(y, expected, places=8, msg=method)
+
+    def test_default_method_is_pchip(self):
+        y_default = self.vol.eval(0.6, 0.4, 25.0)
+        y_pchip = self.vol.eval(0.6, 0.4, 25.0, method='pchip')
+        self.assertEqual(y_default, y_pchip)
+
+    def test_unknown_method_raises(self):
+        with self.assertRaises(ValueError):
+            self.vol.eval(0.6, 0.4, 25.0, method='not-a-method')
+
+    def test_in_range_regression_close_to_analytic(self):
+        expected = 0.6**2 + 0.4**2 + 25.0
+        for method in ('pchip', 'spline', 'poly'):
+            y = self.vol.eval(0.6, 0.4, 25.0, method=method)
+            self.assertAlmostEqual(y, expected, delta=0.2, msg=method)
+
+    def test_default_extrapolate_false_clips_x3(self):
+        y_far = self.vol.eval(0.6, 0.4, 1000.0, extrapolate=False)
+        y_boundary = self.vol.eval(0.6, 0.4, 40.0)
+        self.assertEqual(y_far, y_boundary)
+
+    def test_x3_extrapolation_within_threshold(self):
+        y = self.vol.eval(0.6, 0.4, 45.0, extrapolate=True)
+        self.assertIsNotNone(y)
+        expected = 0.6**2 + 0.4**2 + 45.0
+        self.assertAlmostEqual(y, expected, delta=0.2)
+
+    def test_x3_distance_guard_refuses_far_extrapolation(self):
+        y = self.vol.eval(0.6, 0.4, 1000.0, extrapolate=True)
+        self.assertIsNone(y)
+
+    def test_x3_distance_guard_threshold_is_configurable(self):
+        y_default = self.vol.eval(0.6, 0.4, 41.0, extrapolate=True)
+        y_tight = self.vol.eval(0.6, 0.4, 41.0, extrapolate=True, x3_distance_threshold=0.001)
+        self.assertIsNotNone(y_default)
+        self.assertIsNone(y_tight)
+
+    def test_diagnostics_report_extrapolation_state(self):
+        y, diagnostics = self.vol.eval(0.6, 0.4, 45.0, extrapolate=True, return_diagnostics=True)
+        self.assertIsNotNone(y)
+        self.assertTrue(diagnostics['x3_extrapolated'])
+        self.assertFalse(diagnostics['refused'])
+
+    def test_diagnostics_report_refusal(self):
+        y, diagnostics = self.vol.eval(0.6, 0.4, 1000.0, extrapolate=True, return_diagnostics=True)
+        self.assertIsNone(y)
+        self.assertTrue(diagnostics['refused'])
+
+    def test_x1x2_extrapolation_delegates_to_surface_eval(self):
+        """x1/x2 out of domain: behaviour matches ParametricBivariateSpline.eval directly."""
+        y_no_extrap = self.vol.eval(1.3, 0.4, 20.0, extrapolate=False)
+        y_extrap = self.vol.eval(1.3, 0.4, 20.0, extrapolate=True)
+        self.assertTrue(np.isnan(y_no_extrap))
+        self.assertIsNotNone(y_extrap)
+        expected = 1.3**2 + 0.4**2 + 20.0
+        self.assertAlmostEqual(y_extrap, expected, delta=0.05)
+
+    def test_array_input_builds_outer_product_grid(self):
+        x1 = np.array([0.2, 0.4, 0.6])
+        x2 = np.array([0.1, 0.3, 0.5, 0.7])
+        x3 = np.array([5.0, 15.0])
+
+        y_grid = self.vol.eval(x1, x2, x3)
+        self.assertEqual(y_grid.shape, (3, 4, 2))
+
+        for i, a in enumerate(x1):
+            for j, b in enumerate(x2):
+                for k, c in enumerate(x3):
+                    expected = self.vol.eval(x1=a, x2=b, x3=c)
+                    self.assertAlmostEqual(y_grid[i, j, k], expected, places=8)
+
+    def test_array_input_broadcasts_scalar_axis(self):
+        x1 = np.array([0.2, 0.4, 0.6, 0.8])
+        x2 = np.array([0.1, 0.3, 0.5, 0.7])
+        y = self.vol.eval(x1, x2, 20.0)
+        self.assertEqual(y.shape, (4, 4, 1))
+
+    def test_array_input_with_extrapolation_and_refusal(self):
+        x1 = np.array([0.6])
+        x2 = np.array([0.4])
+        x3 = np.array([25.0, 20.0, 1000.0])
+        y = self.vol.eval(x1, x2, x3, extrapolate=True)
+        self.assertEqual(y.shape, (1, 1, 3))
+        self.assertFalse(np.isnan(y[0, 0, 0]))
+        self.assertFalse(np.isnan(y[0, 0, 1]))
+        self.assertTrue(np.isnan(y[0, 0, 2]))
+
+    def test_array_input_with_out_of_domain_x1x2_does_not_crash(self):
+        """A NaN column from one out-of-domain (x1, x2) must not break the interpolator fit."""
+        x1 = np.array([0.2, 1.5, 0.6])
+        y = self.vol.eval(x1, 0.4, 20.0)
+        self.assertEqual(y.shape, (3, 1, 1))
+        self.assertFalse(np.isnan(y[0, 0, 0]))
+        self.assertTrue(np.isnan(y[1, 0, 0]))
+        self.assertFalse(np.isnan(y[2, 0, 0]))
+
+    def test_list_input_accepted(self):
+        y = self.vol.eval([0.2, 0.4], [0.1, 0.3], [5.0, 15.0])
+        self.assertEqual(y.shape, (2, 2, 2))
+
+    def test_heterogeneous_surfaces_are_valid_without_reconciliation(self):
+        """
+        Unlike LoftedSplineVolume, no make_splines_identical step is
+        needed here: surfaces of different degree, knot placement, and
+        grid resolution are evaluated independently and interpolate
+        exactly through each station's own surface.
+        """
+        x3_values = [0.0, 10.0, 20.0]
+        surfaces = [
+            make_surface_variant(0.0, ku=2, kv=3, u_interior=(0.2,), v_interior=(0.4,)),
+            make_surface_variant(10.0, ku=3, kv=2, u_interior=(0.6,), v_interior=(0.6,)),
+            make_surface_variant(20.0, ku=4, kv=2, u_interior=(0.3, 0.7), v_interior=(0.3,)),
+        ]
+        vol = InterpolatedSplineVolume(surfaces, x3_values)
+
+        for surface, x3 in zip(surfaces, x3_values):
+            y_vol = vol.eval(0.5, 0.5, x3)
+            y_src = surface.eval_point(0.5, 0.5)
+            self.assertAlmostEqual(y_vol, y_src, places=8)
+
+    def test_degree_one_surfaces_fail_even_in_range(self):
+        """
+        Known limitation, more exposed here than in LoftedSplineVolume:
+        since there is no make_splines_identical degree-raising step,
+        a degree-1 direction on the surfaces themselves already breaks
+        ParametricBivariateSpline.eval_point's Newton solve (needs first
+        derivatives; bisplev requires dx < kx), independent of x3 or
+        extrapolate.
+        """
+        surfaces = [
+            make_surface_variant(0.0, ku=1, kv=1, u_interior=(0.3,), v_interior=(0.3,)),
+            make_surface_variant(10.0, ku=1, kv=1, u_interior=(0.7,), v_interior=(0.7,)),
+        ]
+        vol = InterpolatedSplineVolume(surfaces, [0.0, 10.0])
+        with self.assertRaises(ValueError):
+            vol.eval(0.13, 0.87, 5.0)
 
 
 if __name__ == "__main__":

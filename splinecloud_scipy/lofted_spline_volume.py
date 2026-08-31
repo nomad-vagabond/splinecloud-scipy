@@ -12,10 +12,23 @@ Newton, then read y.
 
 import numpy as np
 from splipy import Surface, Volume, BSplineBasis
-from scipy.interpolate import BSpline
+from scipy.interpolate import BSpline, PchipInterpolator, make_interp_spline
+from numpy.polynomial import polynomial as nppoly
 
 from .parametric_spline_surface import ParametricBivariateSpline
 from .api_client import load_spline_surface
+
+
+def _resolve_surface(surface):
+    """Resolve a surface spec to a ParametricBivariateSpline instance."""
+    if isinstance(surface, ParametricBivariateSpline):
+        return surface
+    if isinstance(surface, str):
+        return load_spline_surface(surface)
+    raise TypeError(
+        "Each surface must be a ParametricBivariateSpline instance or a "
+        f"surface UID string, got {type(surface).__name__!r}"
+    )
 
 
 def pbs_to_splipy(pbs):
@@ -325,14 +338,7 @@ class LoftedSplineVolume:
 
     @staticmethod
     def _resolve_surface(surface):
-        if isinstance(surface, ParametricBivariateSpline):
-            return surface
-        if isinstance(surface, str):
-            return load_spline_surface(surface)
-        raise TypeError(
-            "Each surface must be a ParametricBivariateSpline instance or a "
-            f"surface UID string, got {type(surface).__name__!r}"
-        )
+        return _resolve_surface(surface)
 
     def _build_volume(self, w_degree, log_flags):
         """
@@ -394,3 +400,200 @@ class LoftedSplineVolume:
             distance_threshold=distance_threshold, steepness_threshold=steepness_threshold,
             return_diagnostics=return_diagnostics,
         )
+
+
+class InterpolatedSplineVolume:
+    """
+    Builds a pseudo-volume by evaluating a stack of independent parametric
+    surfaces at physical (x1, x2), then interpolating those station values
+    along a third axis (x3), instead of lofting the surfaces into one true
+    trivariate B-spline volume like LoftedSplineVolume does.
+
+    Because each station's surface is evaluated independently -- there is
+    no Surface.make_splines_identical reconciliation step -- the surfaces
+    are free to differ arbitrarily in structure (knot vectors, order,
+    control-net resolution); x1/x2 extrapolation reliability is exactly
+    ParametricBivariateSpline.eval's own (per station), while x3 behaviour
+    (clipping / extrapolation / the distance guard) mirrors
+    ParametricTrivariateSpline.eval's.
+    """
+
+    def __init__(self, surfaces, x3_station_values):
+        """
+        Parameters
+        ----------
+        surfaces : list of ParametricBivariateSpline or str
+            One surface per station, each given either as a
+            ParametricBivariateSpline instance or as a SplineCloud surface
+            UID to be fetched via load_spline_surface. Order must match
+            x3_station_values (ascending).
+        x3_station_values : array-like
+            Station value for each surface, strictly increasing.
+        """
+        if len(surfaces) != len(x3_station_values):
+            raise ValueError("surfaces and x3_station_values must have the same length")
+
+        self.surfaces = [_resolve_surface(s) for s in surfaces]
+        self.stations = np.asarray(x3_station_values, dtype=float)
+        if not np.all(np.diff(self.stations) > 0):
+            raise ValueError("x3_station_values must be strictly increasing")
+
+    def _y_slices(self, x1_vals, x2_vals, extrapolate,
+                   limit_distance, limit_consistency, limit_steepness,
+                   consistency_threshold, distance_threshold, steepness_threshold):
+        """Evaluate every station surface once on the (x1, x2) grid: (n_stations, Nx1, Nx2)."""
+        y_slices = np.empty((len(self.surfaces), len(x1_vals), len(x2_vals)))
+        for k, surf in enumerate(self.surfaces):
+            _, _, Y = surf.eval(
+                x1_vals, x2_vals, extrapolate=extrapolate,
+                limit_distance=limit_distance, limit_consistency=limit_consistency,
+                limit_steepness=limit_steepness, consistency_threshold=consistency_threshold,
+                distance_threshold=distance_threshold, steepness_threshold=steepness_threshold,
+            )
+            y_slices[k] = Y
+        return y_slices
+
+    def _interpolate_x3(self, y_slices, x3_query, method, interp_degree):
+        """
+        Interpolate y_slices (n_stations, Nx1, Nx2) along axis 0 at
+        x3_query -> (Nx1, Nx2, Nx3).
+
+        A given (x1, x2) grid point can be NaN at some stations (that
+        station's own surface refused x1/x2, e.g. it's outside that
+        station's own domain) -- those columns are excluded from the fit
+        entirely (scipy's interpolators reject NaN input outright) and
+        their whole x3 output is NaN, since interpolation can't recover a
+        missing station.
+        """
+        n = len(self.surfaces)
+        method = method.lower()
+        grid_shape = y_slices.shape[1:]                        # (Nx1, Nx2)
+
+        flat = y_slices.reshape(n, -1)                         # (n, Nx1*Nx2)
+        good = np.all(np.isfinite(flat), axis=0)                # (Nx1*Nx2,)
+
+        Y_flat = np.full((flat.shape[1],) + x3_query.shape, np.nan)  # (Nx1*Nx2, Nx3)
+
+        if good.any():
+            good_flat = flat[:, good]                          # (n, n_good)
+
+            if method == 'pchip':
+                # PCHIP prevents overshooting between stations (monotone Hermite).
+                interp = PchipInterpolator(self.stations, good_flat, axis=0, extrapolate=True)
+                result = interp(x3_query)                      # (Nx3, n_good)
+                Y_flat[good] = np.moveaxis(result, 0, -1)
+            elif method == 'spline':
+                k = min(interp_degree, n - 1)
+                interp = make_interp_spline(self.stations, good_flat, k=k, axis=0)
+                result = interp(x3_query, extrapolate=True)    # (Nx3, n_good)
+                Y_flat[good] = np.moveaxis(result, 0, -1)
+            elif method == 'poly':
+                deg = min(interp_degree, n - 1)
+                coefs = nppoly.polyfit(self.stations, good_flat, deg=deg)
+                Y_flat[good] = nppoly.polyval(x3_query, coefs, tensor=True)  # (n_good, Nx3)
+            else:
+                raise ValueError(f"Unknown method {method!r}; expected 'pchip', 'spline', or 'poly'")
+
+        return Y_flat.reshape(grid_shape + x3_query.shape)     # (Nx1, Nx2, Nx3)
+
+    def eval(self, x1, x2, x3, extrapolate=False, method='pchip', interp_degree=3,
+             x3_distance_threshold=0.5,
+             limit_distance=False, limit_consistency=False, limit_steepness=False,
+             consistency_threshold=0.5, distance_threshold=0.5, steepness_threshold=10,
+             return_diagnostics=False):
+        """
+        Evaluate y at physical (x1, x2, x3), scalar or array-like.
+
+        x1, x2 are resolved per station independently via
+        ParametricBivariateSpline.eval (extrapolate and the limit_*/
+        *_threshold reliability checks are forwarded to it unchanged --
+        including its own convention of returning NaN for a refused
+        point, regardless of the extrapolate flag). x3 is then resolved
+        by 1D interpolation across stations:
+
+        If extrapolate is False (default), x3 is clipped into
+        [x3_min, x3_max] before interpolating -- mirrors
+        ParametricTrivariateSpline.eval's clipped default.
+
+        If extrapolate is True, x3 may lie outside [x3_min, x3_max]: the
+        interpolator (pchip/spline) is evaluated past its fitted range,
+        or, for 'poly', the fitted polynomial (defined everywhere) is
+        evaluated directly. A distance guard refuses (NaN) x3 beyond
+        x3_distance_threshold, mirroring
+        ParametricTrivariateSpline.eval's w_distance_threshold.
+
+        Any array-like inputs among x1, x2, x3 are combined into a
+        rectangular grid via an outer product, exactly like
+        LoftedSplineVolume.eval.
+
+        Parameters
+        ----------
+        method : {'pchip', 'spline', 'poly'}
+            1D interpolation scheme along the station (x3) axis.
+            'pchip' is a monotone cubic Hermite interpolant (no
+            overshoot). 'spline' is a degree-interp_degree B-spline
+            interpolant. 'poly' is a degree-interp_degree polynomial fit
+            (exact interpolation when interp_degree == n_stations - 1;
+            ill-conditioned for many stations -- prefer 'spline' then).
+        interp_degree : int
+            Degree used by 'spline'/'poly' (capped at n_stations - 1);
+            unused by 'pchip', which is always cubic Hermite.
+        x3_distance_threshold : float
+            Maximum allowed distance of x3 outside [x3_min, x3_max], as a
+            fraction of the station domain.
+        return_diagnostics : bool
+            If True, also return a dict (or, for array input, a matching
+            object-ndarray of dicts) describing whether/where x3 was
+            extrapolated or refused.
+
+        Returns
+        -------
+        y : float, or ndarray of shape (len(x1), len(x2), len(x3))
+            (scalar axes counted as length 1).
+        diagnostics : dict, or object-ndarray of dicts matching the output
+            shape, only when return_diagnostics=True.
+        """
+        scalar_input = (not hasattr(x1, '__iter__') and not hasattr(x2, '__iter__')
+                         and not hasattr(x3, '__iter__'))
+
+        x1_vals = np.atleast_1d(np.asarray(x1, dtype=float))
+        x2_vals = np.atleast_1d(np.asarray(x2, dtype=float))
+        x3_vals = np.atleast_1d(np.asarray(x3, dtype=float))
+
+        x3_min, x3_max = self.stations[0], self.stations[-1]
+        w = (x3_vals - x3_min) / (x3_max - x3_min)
+        w_dist = np.where(w < 0.0, -w, np.where(w > 1.0, w - 1.0, 0.0))
+
+        if extrapolate:
+            x3_query = x3_vals
+            refused = w_dist > x3_distance_threshold
+        else:
+            x3_query = np.clip(x3_vals, x3_min, x3_max)
+            refused = np.zeros_like(x3_vals, dtype=bool)
+
+        y_slices = self._y_slices(
+            x1_vals, x2_vals, extrapolate,
+            limit_distance, limit_consistency, limit_steepness,
+            consistency_threshold, distance_threshold, steepness_threshold,
+        )
+        Y = self._interpolate_x3(y_slices, x3_query, method, interp_degree)  # (Nx1, Nx2, Nx3)
+
+        if refused.any():
+            Y[..., refused] = np.nan
+
+        if return_diagnostics:
+            diagnostics = np.empty(Y.shape, dtype=object)
+            for k in range(len(x3_vals)):
+                diagnostics[..., k] = {'x3_extrapolated': bool(w_dist[k] > 0.0),
+                                        'refused': bool(refused[k])}
+            if scalar_input:
+                y = Y.reshape(())[()]
+                return (None if refused[0] else float(y)), diagnostics.reshape(())[()]
+            return Y, diagnostics
+
+        if scalar_input:
+            y = Y.reshape(())[()]
+            return None if refused[0] else float(y)
+        return Y
+        
+        return float(interp_1d(x3))

@@ -2,4 +2,4 @@ from .api_client import load_spline, load_subset, load_spline_surface, SPLINECLO
 from .parametric_spline import ParametricUnivariateSpline
 from .parametric_spline_surface import ParametricBivariateSpline
 from .piecewise_polynomial import PPolyInvertible
-from .lofted_spline_volume import LoftedSplineVolume, ParametricTrivariateSpline
+from .lofted_spline_volume import LoftedSplineVolume, ParametricTrivariateSpline, InterpolatedSplineVolume
