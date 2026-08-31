@@ -12,6 +12,7 @@ Newton, then read y.
 
 import numpy as np
 from splipy import Surface, Volume, BSplineBasis
+from scipy.interpolate import BSpline
 
 from .parametric_spline_surface import ParametricBivariateSpline
 from .api_client import load_spline_surface
@@ -70,12 +71,77 @@ class ParametricTrivariateSpline:
         self._u_dom = (bu.start(), bu.end())
         self._v_dom = (bv.start(), bv.end())
         self._w_dom = (bw.start(), bw.end())
+        self._cross_section_cache = {}
 
     def _eval_phys(self, u, v, w):
         """Return (x1, x2, x3, y) at parameter (u,v,w)."""
         return self.vol(u, v, w)                # shape (4,)
 
-    def eval(self, x1, x2, x3, tol=1e-10, max_iter=60):
+    def eval(self, x1, x2, x3, tol=1e-10, max_iter=60, extrapolate=False,
+             w_distance_threshold=0.5,
+             limit_distance=False, limit_consistency=False, limit_steepness=False,
+             consistency_threshold=0.5, distance_threshold=0.5, steepness_threshold=10,
+             return_diagnostics=False):
+        """
+        Evaluate y at physical (x1, x2, x3).
+
+        If extrapolate is False (default), (u, v, w) are clamped to the
+        volume's parametric domain -- unchanged legacy behaviour.
+
+        If extrapolate is True, x3 may lie outside [x3_min, x3_max]: w is
+        computed directly from x3 (an exactly-determined 1-unknown/1-target
+        problem, no Newton needed), then a synthetic cross-section
+        ParametricBivariateSpline is built at that w -- in-domain or,
+        via an extrapolation-tolerant basis evaluator, beyond it -- and
+        x1/x2 (in- or out-of-domain) are resolved entirely by that
+        surface's own eval_point(extrapolate=True), an already-tested
+        exactly-determined 2-unknown/2-target problem. Extrapolation
+        refused by the w-distance guard or by the cross-section's own
+        reliability checks returns None, mirroring
+        ParametricBivariateSpline's convention.
+
+        Parameters
+        ----------
+        w_distance_threshold : float
+            Maximum allowed distance of w outside [0, 1], as a fraction
+            of the station domain (mirrors distance_threshold below, but
+            in station/w space instead of physical x1/x2 space).
+        limit_distance, limit_consistency, limit_steepness,
+        consistency_threshold, distance_threshold, steepness_threshold :
+            Forwarded to the cross-section's ParametricBivariateSpline.eval_point
+            for x1/x2 extrapolation reliability checks.
+        return_diagnostics : bool
+            If True, also return a dict describing whether/where
+            extrapolation occurred.
+        """
+        if not extrapolate:
+            y = self._eval_clipped(x1, x2, x3, tol=tol, max_iter=max_iter)
+            if return_diagnostics:
+                return y, {'w_extrapolated': False, 'refused': False}
+            return y
+
+        x3_int = np.log10(x3) if self.log_x3 else x3
+        w = self.x3_to_w(x3_int)
+        w_dist = self._w_extrapolation_distance(w)
+
+        if w_dist > w_distance_threshold:
+            if return_diagnostics:
+                return None, {'w': w, 'w_extrapolated': w_dist > 0.0, 'refused': True}
+            return None
+
+        surface = self._cross_section_at_w(w)
+        y = surface.eval_point(
+            x1, x2, tol=tol, max_iter=max_iter, extrapolate=True,
+            limit_distance=limit_distance, limit_consistency=limit_consistency,
+            limit_steepness=limit_steepness, consistency_threshold=consistency_threshold,
+            distance_threshold=distance_threshold, steepness_threshold=steepness_threshold,
+        )
+
+        if return_diagnostics:
+            return y, {'w': w, 'w_extrapolated': w_dist > 0.0, 'refused': y is None}
+        return y
+
+    def _eval_clipped(self, x1, x2, x3, tol=1e-10, max_iter=60):
         """Invert (x1,x2,x3) -> (u,v,w) by Newton, return y. Mirrors PBS.eval_point."""
         if self.log_x1: x1 = np.log10(x1)
         if self.log_x2: x2 = np.log10(x2)
@@ -110,6 +176,58 @@ class ParametricTrivariateSpline:
 
     def x3_to_w(self, x3):
         return (x3 - self.x3_min) / (self.x3_max - self.x3_min)
+
+    def _w_extrapolation_distance(self, w):
+        """Distance of w outside [0, 1], as a fraction of the station domain."""
+        if w < 0.0:
+            return -w
+        if w > 1.0:
+            return w - 1.0
+        return 0.0
+
+    def _w_basis_vector(self, w):
+        """
+        Basis-function vector for the w (station) axis at w, tolerant of w
+        outside [0, 1]. splipy.BSplineBasis clamps to all-zero outside its
+        domain; scipy.interpolate.BSpline.design_matrix(extrapolate=True)
+        matches it exactly in-domain and extends the boundary polynomial
+        piece outside, which is what a Taylor-consistent extrapolation needs.
+        """
+        bw = self.vol.bases[2]
+        k = bw.order - 1
+        dm = BSpline.design_matrix([w], bw.knots, k, extrapolate=True)
+        return np.asarray(dm.todense()).ravel()
+
+    def _cross_section_at_w(self, w):
+        """
+        Build (or fetch from cache) the ParametricBivariateSpline that is
+        the volume's cross-section at station w -- exact if w is in [0, 1],
+        extrapolated along the station axis otherwise.
+        """
+        cached = self._cross_section_cache.get(w)
+        if cached is not None:
+            return cached
+
+        Nw = self._w_basis_vector(w)                      # (nw,)
+        cp = self.vol.controlpoints                       # (nu, nv, nw, 4) = [x1, x2, x3, y]
+        cp_cs = np.einsum('k,ijkd->ijd', Nw, cp)           # (nu, nv, 4)
+
+        bu, bv, _ = self.vol.bases
+        tu, tv = bu.knots, bv.knots
+        ku, kv = bu.order - 1, bv.order - 1
+
+        # ParametricBivariateSpline expects cp[i,j] = [x1, y, x2]
+        cp_pbs = np.empty(cp_cs.shape[:2] + (3,))
+        cp_pbs[:, :, 0] = cp_cs[:, :, 0]     # x1
+        cp_pbs[:, :, 1] = cp_cs[:, :, 3]     # y
+        cp_pbs[:, :, 2] = cp_cs[:, :, 1]     # x2
+
+        surface = ParametricBivariateSpline(
+            tu, tv, cp_pbs, ku, kv,
+            log_x1=self.log_x1, log_x2=self.log_x2, log_y=self.log_y,
+        )
+        self._cross_section_cache[w] = surface
+        return surface
 
 
 class LoftedSplineVolume:
@@ -201,5 +319,16 @@ class LoftedSplineVolume:
         volume = Volume(basis_u, basis_v, basis_w, cp_vol, rational=False, raw=True)
         return ParametricTrivariateSpline(volume, (x3_0, x3_1), log_flags=log_flags)
 
-    def eval(self, x1, x2, x3, tol=1e-10, max_iter=60):
-        return self._volume.eval(x1, x2, x3, tol=tol, max_iter=max_iter)
+    def eval(self, x1, x2, x3, tol=1e-10, max_iter=60, extrapolate=False,
+             w_distance_threshold=0.5,
+             limit_distance=False, limit_consistency=False, limit_steepness=False,
+             consistency_threshold=0.5, distance_threshold=0.5, steepness_threshold=10,
+             return_diagnostics=False):
+        return self._volume.eval(
+            x1, x2, x3, tol=tol, max_iter=max_iter, extrapolate=extrapolate,
+            w_distance_threshold=w_distance_threshold,
+            limit_distance=limit_distance, limit_consistency=limit_consistency,
+            limit_steepness=limit_steepness, consistency_threshold=consistency_threshold,
+            distance_threshold=distance_threshold, steepness_threshold=steepness_threshold,
+            return_diagnostics=return_diagnostics,
+        )
