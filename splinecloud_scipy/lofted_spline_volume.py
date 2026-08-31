@@ -171,7 +171,7 @@ class ParametricTrivariateSpline:
             v = np.clip(v + step[1], *self._v_dom)
             w = np.clip(w + step[2], *self._w_dom)
 
-        y = self._eval_phys(u, v, w)[3]
+        y = float(self._eval_phys(u, v, w)[3])
         return 10.0 ** y if self.log_y else y
 
     def x3_to_w(self, x3):
