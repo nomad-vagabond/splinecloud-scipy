@@ -14,20 +14,31 @@ Vector2D = Sequence[Sequence[float]]
 class PPolyInvertible(si.PPoly):
     """Piecewise polynomial with ability to evaluate inverse dependency x(y)"""
 
-    @classmethod
-    def construct_fast(cls, c, x, extrapolate=None, axis=0):
-        self = super(PPolyInvertible, cls).construct_fast(c, x, extrapolate=extrapolate, axis=axis)
-
+    def _init_derived(self):
+        """
+        Set the attributes derived from (c, x) that evalinv/_form_intervals
+        depend on. Called explicitly rather than relied upon as a side
+        effect of construct_fast: since scipy >= 1.18, PPoly.from_spline
+        builds the polynomial through an internal delegate class and only
+        wraps the result into this subclass at the very end, so it never
+        actually calls our construct_fast override.
+        """
         self.k = len(self.c) - 1
         self.powers = np.arange(self.k, -1, -1)
         self.intervals = self._form_intervals(self.x)
+
+    @classmethod
+    def construct_fast(cls, c, x, extrapolate=None, axis=0):
+        self = super(PPolyInvertible, cls).construct_fast(c, x, extrapolate=extrapolate, axis=axis)
+        self._init_derived()
         return self
 
     @classmethod
     def from_splinefunc(cls, spline, extrapolate=None):
         self = cls.from_spline(spline.tck, extrapolate=extrapolate)
+        self._init_derived()
         self.project_intervals(spline)
-        
+
         return self
 
     def eval_poly(self, t:float, coeffs:Vector1D, tbreak:float) -> float:
