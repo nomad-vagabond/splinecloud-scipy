@@ -3,6 +3,7 @@ import requests, json
 import numpy as np
 
 from .parametric_spline import ParametricUnivariateSpline
+from .explicit_spline import ExplicitUnivariateSpline
 from .parametric_spline_surface import ParametricBivariateSpline
 
 
@@ -152,18 +153,33 @@ def load_spline(curve_id_or_url):
             raise ValueError("Wrong curve id was specified")
         url = SPLINECLOUD_API_URL+"/curves/{}/".format(curve_id)
 
-    response = requests.get(url)
+    ## spline=native: explicit curves come in the explicit schema (v1); parametric ones are
+    ## unchanged. Servers that don't know the parameter return the legacy parametric form.
+    response = requests.get(url, params={"spline": "native"})
     curve = json.loads(response.content)
 
+    form = curve.get('form', 'parametric')
     curve_params = curve['spline']
-    t = np.array(curve_params['t'])
-    c = np.array(curve_params['c'])    
-    tcck = t, c[:, 0], c[:, 1], curve_params['k']
 
-    log_x = curve['scale_x'] == "Logarithmic"
-    log_y = curve['scale_y'] == "Logarithmic"
+    if form not in ('explicit', 'parametric'):
+        raise ValueError(f"Unsupported spline form '{form}'. "
+                         "Upgrade splinecloud-scipy to load this curve.")
 
-    spline = ParametricUnivariateSpline(tcck, log_x=log_x, log_y=log_y)
+    if form == 'explicit' and 'v' in curve_params:
+        spline = ExplicitUnivariateSpline.from_json(curve_params)
+    else:
+        ## parametric curves, and explicit curves from a server without spline=native
+        ## support (their exact Greville embedding evaluates to the same y(x))
+        t = np.array(curve_params['t'])
+        c = np.array(curve_params['c'])
+        tcck = t, c[:, 0], c[:, 1], curve_params['k']
+
+        log_x = curve['scale_x'] == "Logarithmic"
+        log_y = curve['scale_y'] == "Logarithmic"
+
+        spline = ParametricUnivariateSpline(tcck, log_x=log_x, log_y=log_y)
+
+    spline.form = form
     spline.load_data = lambda: load_subset(curve['subset_uid'])
 
     return spline

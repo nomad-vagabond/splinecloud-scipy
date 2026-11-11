@@ -9,8 +9,10 @@ from splinecloud_scipy import (
     SPLINECLOUD_API_URL, 
     ParametricUnivariateSpline, 
     ParametricBivariateSpline,
-    SplineSurface
+    SplineSurface,
+    ExplicitUnivariateSpline
 )
+from responses import matchers
 
 
 class APIClientTests(unittest.TestCase):
@@ -91,6 +93,49 @@ class APIClientTests(unittest.TestCase):
         cx, cy = zip(*control_points)
         self.assertEqual(spline.coeffs_x.tolist(), list(cx))
         self.assertEqual(spline.coeffs_y.tolist(), list(cy))
+
+    @responses.activate
+    def test_load_spline_explicit_native(self):
+        curve_url = SPLINECLOUD_API_URL + '/curves/spl_K5t56P5bormJ/'
+        spline_response = {
+            "uid": "spl_K5t56P5bormJ", "curve_type": "smooth-bspl", "form": "explicit",
+            "degree": 1, "order": 1,
+            "spline": {"v": 1, "nx": 1, "ny": 1, "k": [1], "t": [[0.0, 0.0, 1.0, 1.0]],
+                       "shape": [2], "c": [0.0, 2.0], "domain": [[0.0, 1.0]],
+                       "scales": ["Linear", "Linear"], "extrapolation": "none"},
+            "subset_uid": "sbt_1234567890abcdef", "scale_x": "Linear", "scale_y": "Linear"
+        }
+        ## the client must ask for the native representation
+        responses.add(responses.GET, curve_url, json=spline_response, status=200,
+                      match=[matchers.query_param_matcher({"spline": "native"})])
+        spline = load_spline("spl_K5t56P5bormJ")
+
+        self.assertIsInstance(spline, ExplicitUnivariateSpline)
+        self.assertEqual(spline.form, "explicit")
+        self.assertAlmostEqual(spline.eval(0.25), 0.5)
+        self.assertTrue(callable(spline.load_data))
+
+    @responses.activate
+    def test_load_spline_explicit_from_legacy_server(self):
+        ## a server without spline=native support returns the Greville embedding
+        curve_url = SPLINECLOUD_API_URL + '/curves/spl_K5t56P5bormJ/'
+        spline_response = {
+            "uid": "spl_K5t56P5bormJ", "form": "explicit",
+            "spline": {"t": [0, 0, 1, 1], "c": [[0.0, 0.0], [1.0, 2.0]], "k": 1, "w": [1, 1]},
+            "subset_uid": "sbt_1234567890abcdef", "scale_x": "Linear", "scale_y": "Linear"
+        }
+        responses.add(responses.GET, curve_url, json=spline_response, status=200)
+        spline = load_spline("spl_K5t56P5bormJ")
+
+        self.assertIsInstance(spline, ParametricUnivariateSpline)
+        self.assertAlmostEqual(spline.eval(0.25), 0.5)
+
+    @responses.activate
+    def test_load_spline_unknown_form(self):
+        curve_url = SPLINECLOUD_API_URL + '/curves/spl_K5t56P5bormJ/'
+        responses.add(responses.GET, curve_url, json={"form": "fancy", "spline": {}}, status=200)
+        with self.assertRaises(ValueError):
+            load_spline("spl_K5t56P5bormJ")
 
     @responses.activate
     def test_load_spline_surface(self):

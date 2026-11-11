@@ -61,6 +61,27 @@ print(RMSE)
 ```
 
 
+## Explicit and parametric curves
+
+Each curve has a `form`. Curves that are functions of x - most smoothing, least-squares and
+interpolating fits - are `"explicit"`, and `load_spline` returns an `ExplicitUnivariateSpline`
+that evaluates y(x) directly. Curves that aren't (data that isn't ordered in x, parametric
+fits, control points edited sideways, NURBS) are `"parametric"` and load as
+`ParametricUnivariateSpline`. Both have the same `eval(x, extrapolate=False)` and
+`fit_accuracy` API, so code using them doesn't change.
+
+```python
+spline = load_spline('spl_K5t56P5bormJ')
+spline.form          # 'explicit' or 'parametric'
+spline.eval(X)       # NaN outside the curve's x range unless extrapolate=True
+```
+
+Explicit curves evaluate much faster (about 400x for 10,000 points), and also accept an
+extrapolation policy: `spline.eval(X, extrapolate="linear")` (or `"clamp"`, `"polynomial"`,
+`"none"`). `spline.to_parametric()` returns the equivalent `ParametricUnivariateSpline`.
+
+Requires SciPy >= 1.12.
+
 ## Example of loading data in your code
 
 ```python

@@ -1,5 +1,6 @@
 from .api_client import load_spline, load_subset, load_spline_surface, SPLINECLOUD_API_URL, SplineSurface
 from .parametric_spline import ParametricUnivariateSpline
+from .explicit_spline import NdBsplExplicit, ExplicitUnivariateSpline
 from .parametric_spline_surface import ParametricBivariateSpline
 from .piecewise_polynomial import PPolyInvertible
 from .lofted_spline_volume import LoftedSplineVolume, ParametricTrivariateSpline, InterpolatedSplineVolume
