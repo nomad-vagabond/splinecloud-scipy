@@ -1,4 +1,5 @@
-from .api_client import load_spline, load_subset, load_spline_surface, SPLINECLOUD_API_URL, SplineSurface
+from .api_client import (load_model, load_spline, load_subset, load_spline_surface, SPLINECLOUD_API_URL,
+                         SplineSurface, ExplicitSplineSurface)
 from .parametric_spline import ParametricUnivariateSpline
 from .explicit_spline import NdBsplExplicit, ExplicitUnivariateSpline
 from .parametric_spline_surface import ParametricBivariateSpline

@@ -5,6 +5,7 @@ import numpy as np
 from scipy.interpolate import BSpline
 
 from .parametric_spline import ParametricUnivariateSpline
+from .parametric_spline_surface import ParametricBivariateSpline
 
 
 LOG_SCALE = "Logarithmic"
@@ -53,6 +54,7 @@ class NdBsplExplicit:
         scales = list(scales) if scales is not None else ["Linear"] * (self.ndim + 1)
         if len(scales) != self.ndim + 1:
             raise ValueError("scales must list every input axis followed by the output")
+        self.scales = scales
         self.log_x = np.array([s == LOG_SCALE for s in scales[:-1]])
         self.log_y = scales[-1] == LOG_SCALE
 
@@ -133,6 +135,12 @@ class NdBsplExplicit:
         -------
         ndarray, shape (n,)
         """
+        return self.eval_points(points, extrapolate=extrapolate)
+
+    def eval_points(self, points, extrapolate=None) -> np.ndarray:
+        """Pointwise evaluation, (n, ndim) -> (n,): the same as ``NdBsplExplicit.eval``, kept
+        under its own name for subclasses whose ``eval`` has legacy semantics
+        (ExplicitUnivariateSpline, ExplicitSplineSurface)."""
         policy = self.extrapolation if extrapolate is None else extrapolate
         self._check_policy(policy)
 
@@ -167,7 +175,7 @@ class NdBsplExplicit:
             raise TypeError(f"Expected {self.ndim} coordinate arguments, got {len(xs)}")
         arrays = np.broadcast_arrays(*[np.asarray(x, dtype=float) for x in xs])
         shape = arrays[0].shape
-        y = self.eval(np.stack([a.ravel() for a in arrays], axis=-1))
+        y = self.eval_points(np.stack([a.ravel() for a in arrays], axis=-1))
         return float(y[0]) if shape == () else y.reshape(shape)
 
     def eval_grid(self, *axes, extrapolate=None) -> np.ndarray:
@@ -177,7 +185,7 @@ class NdBsplExplicit:
         axes = [np.atleast_1d(np.asarray(a, dtype=float)) for a in axes]
         mesh = np.meshgrid(*axes, indexing="ij")
         points = np.stack([m.ravel() for m in mesh], axis=-1)
-        return self.eval(points, extrapolate=extrapolate).reshape(mesh[0].shape)
+        return self.eval_points(points, extrapolate=extrapolate).reshape(mesh[0].shape)
 
     def grad(self, points) -> np.ndarray:
         """Gradient dy/dx_i in physical units at points inside the domain; shape (n, ndim).
@@ -195,6 +203,71 @@ class NdBsplExplicit:
         g = np.where(self.log_x, g / (points * math.log(10)), g)
         g[outside] = np.nan
         return g
+
+    ## ------------------------------------------------------- slices and embeddings
+
+    def slice(self, fixed) -> "NdBsplExplicit":
+        """
+        Lower-dimensional spline with some inputs fixed, e.g. ``surface.slice({1: 0.3})``
+        gives y(x1) at x2 = 0.3. Exact: the fixed axes are contracted with their B-spline
+        basis values.
+
+        Parameters
+        ----------
+        fixed : dict
+            ``{axis index: physical value}``; at least one axis must stay free and every
+            value must lie inside the domain.
+        """
+        if not fixed:
+            return self
+        if any(a < 0 or a >= self.ndim for a in fixed) or len(fixed) >= self.ndim:
+            raise ValueError("fixed must name existing axes and leave at least one free")
+        c = self.c
+        for axis in sorted(fixed, reverse=True):     ## highest first keeps axis numbers valid
+            value = float(fixed[axis])
+            if self.log_x[axis]:
+                value = math.log10(value)
+            lo, hi = self._domain[axis]
+            tol = DOMAIN_RTOL * (hi - lo)
+            if not lo - tol <= value <= hi + tol:
+                raise ValueError(f"Slice value for axis {axis} lies outside the domain")
+            basis = BSpline.design_matrix([min(max(value, lo), hi)], self.t[axis],
+                                          self.k[axis]).toarray()[0]
+            c = np.tensordot(basis, c, axes=(0, axis))
+        free = [i for i in range(self.ndim) if i not in fixed]
+        cls = ExplicitUnivariateSpline if len(free) == 1 else NdBsplExplicit
+        return cls([self.t[i] for i in free], [self.k[i] for i in free], c,
+                   scales=[self.scales[i] for i in free] + [self.scales[-1]],
+                   extrapolation=self.extrapolation)
+
+    def _greville(self, axis):
+        t, k = self.t[axis], self.k[axis]
+        return np.array([t[i + 1:i + k + 1].mean() for i in range(self.shape[axis])])
+
+    def to_parametric(self):
+        """
+        The exact parametric (Greville) embedding: control points at the Greville abscissae,
+        knots normalised to [0, 1]. Same geometry, evaluated by inverting the parametric map.
+
+        Returns
+        -------
+        ParametricUnivariateSpline (one input) or ParametricBivariateSpline (two inputs,
+        control points ``[x1, y, x2]`` as in lofted surfaces).
+        """
+        def normalised(t):
+            return (t - t[0]) / (t[-1] - t[0])
+
+        if self.ndim == 1:
+            return ParametricUnivariateSpline(
+                (normalised(self.t[0]), self._greville(0), self.c, self.k[0]),
+                log_x=bool(self.log_x[0]), log_y=self.log_y)
+        if self.ndim == 2:
+            g1, g2 = self._greville(0), self._greville(1)
+            cp = np.stack(np.broadcast_arrays(g1[:, None], self.c, g2[None, :]), axis=-1)
+            return ParametricBivariateSpline(
+                normalised(self.t[0]), normalised(self.t[1]), cp, self.k[0], self.k[1],
+                log_x1=bool(self.log_x[0]), log_x2=bool(self.log_x[1]), log_y=self.log_y)
+        raise ValueError("A parametric embedding exists only for one or two inputs")
 
 
 class ExplicitUnivariateSpline(NdBsplExplicit):
@@ -235,8 +308,8 @@ class ExplicitUnivariateSpline(NdBsplExplicit):
         if isinstance(extrapolate, bool):
             extrapolate = "polynomial" if extrapolate else "none"
         if hasattr(x, '__iter__'):
-            return super().eval(np.asarray(x, dtype=float), extrapolate=extrapolate)
-        return float(super().eval(np.array([float(x)]), extrapolate=extrapolate)[0])
+            return self.eval_points(np.asarray(x, dtype=float), extrapolate=extrapolate)
+        return float(self.eval_points(np.array([float(x)]), extrapolate=extrapolate)[0])
 
     def fit_accuracy(self, points: Sequence[Sequence[float]], weights=None,
                      method="RMSE") -> float:
@@ -252,12 +325,3 @@ class ExplicitUnivariateSpline(NdBsplExplicit):
         if method == "MAE":
             return float(np.sum(weights * np.abs(residuals)) / pnum)
         raise ValueError(f"Invalid method: {method}. Should be one of 'RMSE', 'MSE', or 'MAE'")
-
-    def to_parametric(self) -> ParametricUnivariateSpline:
-        """The exact parametric form (x(t), y(t)): control points at the Greville abscissae,
-        knots normalised to [0, 1]. Same as the legacy API representation."""
-        t, k = self.t[0], self.k[0]
-        greville = np.array([t[i + 1:i + k + 1].mean() for i in range(len(self.c))])
-        t_norm = (t - t[0]) / (t[-1] - t[0])
-        return ParametricUnivariateSpline((t_norm, greville, self.c, k),
-                                          log_x=bool(self.log_x[0]), log_y=self.log_y)

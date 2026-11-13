@@ -82,6 +82,48 @@ extrapolation policy: `spline.eval(X, extrapolate="linear")` (or `"clamp"`, `"po
 
 Requires SciPy >= 1.12.
 
+## Spline surfaces: lofted and fitted
+
+`load_spline_surface` (or `load_model`) returns the class that matches the surface's `form`:
+
+- **Lofted surfaces** (`form == "parametric"`, built from curves) load as `SplineSurface`, as
+  before.
+- **Fitted surfaces** (`form == "explicit"`, a smooth surface y = f(x1, x2) fitted to a table
+  of points) load as `ExplicitSplineSurface`. They need splinecloud-scipy >= 1.5; older
+  versions can only read lofted surfaces.
+
+`ExplicitSplineSurface.eval(x1, x2)` works like `SplineSurface.eval`, so existing code keeps
+working: scalars give a float, arrays give the outer-product grid `X1, X2, Y`, and
+`compute_gradients=True` adds dy/dx1 and dy/dx2. Points outside the fitted domain give NaN
+unless `extrapolate=True` (linear extrapolation from the nearest domain point) or a policy
+name (`"linear"`, `"clamp"`, `"polynomial"`, `"none"`).
+
+```python
+from splinecloud_scipy import load_model
+
+surface = load_model('srf_xxxxxxxxxxxx')  # a surface uid (load_model also takes spl_ uids)
+surface.form                            # 'explicit' for fitted surfaces
+surface.eval(4.0, 0.3)                  # y at x1 = 4.0, x2 = 0.3
+X1, X2, Y = surface.eval(x1_values, x2_values)
+```
+
+Fitted surfaces also have a direct, pointwise API and their fit report:
+
+```python
+surface(x1_array, x2_array)             # pointwise, with NumPy broadcasting
+surface.eval_grid(x1_values, x2_values) # Y only, shape (len(x1_values), len(x2_values))
+surface.grad(points)                    # (n, 2) gradients at (n, 2) points
+surface.slice({1: 0.3})                 # the curve y(x1) at x2 = 0.3 (exact)
+surface.domain                          # [[x1_min, x1_max], [x2_min, x2_max]]
+surface.accuracy                        # {'r2': ..., 'rmse': ..., 'n': ...}
+surface.fit_status                      # 'ok', 'not_converged' or 'pending'
+
+labels, data = surface.load_data()      # the (N, 3) [x1, x2, y] points it was fitted to
+surface.excluded_points                 # points excluded from the fit (None if none)
+```
+
+`surface.to_parametric()` returns the same surface as a `ParametricBivariateSpline`.
+
 ## Example of loading data in your code
 
 ```python

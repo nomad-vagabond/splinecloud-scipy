@@ -3,7 +3,8 @@ import unittest
 import numpy as np
 from scipy.interpolate import UnivariateSpline, NdBSpline
 
-from splinecloud_scipy import NdBsplExplicit, ExplicitUnivariateSpline, ParametricUnivariateSpline
+from splinecloud_scipy import (NdBsplExplicit, ExplicitUnivariateSpline, ParametricUnivariateSpline,
+                               ParametricBivariateSpline)
 
 
 def fitted_curve(log_x=False, log_y=False):
@@ -129,6 +130,70 @@ class TestNdBsplExplicit(unittest.TestCase):
 
     def test_outside_domain_is_nan_by_default(self):
         self.assertTrue(np.isnan(self.spline.eval([[1.5, 0.0]])[0]))
+
+
+def explicit_surface(log_x1=False, log_x2=False, log_y=False):
+    """A cubic explicit surface on x1 in [1, 10], x2 in [0.5, 5] (physical), stored in scaled
+    space like SplineCloud's fitted surfaces."""
+    k = 3
+    lo1, hi1 = (0.0, 1.0) if log_x1 else (1.0, 10.0)
+    lo2, hi2 = (np.log10(0.5), np.log10(5.0)) if log_x2 else (0.5, 5.0)
+    t1 = np.r_[[lo1] * 4, np.linspace(lo1, hi1, 5)[1:-1], [hi1] * 4]
+    t2 = np.r_[[lo2] * 4, np.linspace(lo2, hi2, 4)[1:-1], [hi2] * 4]
+    rng = np.random.default_rng(3)
+    c = rng.uniform(0.5, 1.5, (len(t1) - k - 1, len(t2) - k - 1))
+    scales = ["Logarithmic" if log else "Linear" for log in (log_x1, log_x2, log_y)]
+    return NdBsplExplicit([t1, t2], [k, k], c.ravel(), scales=scales)
+
+
+class TestExplicitSurfaceEmbeddingAndSlices(unittest.TestCase):
+
+    def _inner_points(self, spline, n=40):
+        lo, hi = spline.domain[:, 0], spline.domain[:, 1]
+        return np.random.default_rng(4).uniform(lo + 0.02 * (hi - lo), hi - 0.02 * (hi - lo),
+                                                (n, 2))
+
+    def test_to_parametric_matches_explicit(self):
+        for logs in ((False, False, False), (True, False, True), (True, True, True)):
+            spline = explicit_surface(*logs)
+            parametric = spline.to_parametric()
+            self.assertIsInstance(parametric, ParametricBivariateSpline)
+            pts = self._inner_points(spline)
+            expected = spline.eval(pts)
+            got = np.array([parametric.eval_point(x1, x2) for x1, x2 in pts])
+            np.testing.assert_allclose(got, expected, rtol=1e-8, err_msg=str(logs))
+
+    def test_slice_fixed_x2(self):
+        for logs in ((False, False, False), (True, True, True)):
+            spline = explicit_surface(*logs)
+            x2 = 2.0
+            curve = spline.slice({1: x2})
+            self.assertIsInstance(curve, ExplicitUnivariateSpline)
+            x1 = np.linspace(*spline.domain[0], 50)
+            np.testing.assert_allclose(curve.eval(x1), spline(x1, np.full_like(x1, x2)),
+                                       rtol=1e-12, err_msg=str(logs))
+
+    def test_slice_fixed_x1(self):
+        spline = explicit_surface(log_x1=True)
+        curve = spline.slice({0: 3.0})
+        x2 = np.linspace(*spline.domain[1], 30)
+        np.testing.assert_allclose(curve.eval(x2), spline(np.full_like(x2, 3.0), x2),
+                                   rtol=1e-12)
+
+    def test_slice_rejects_bad_requests(self):
+        spline = explicit_surface()
+        self.assertIs(spline.slice({}), spline)
+        with self.assertRaises(ValueError):
+            spline.slice({1: 50.0})             ## outside the domain
+        with self.assertRaises(ValueError):
+            spline.slice({0: 2.0, 1: 2.0})      ## nothing left free
+        with self.assertRaises(ValueError):
+            spline.slice({2: 1.0})              ## no such axis
+
+    def test_eval_points_and_call_agree(self):
+        spline = explicit_surface()
+        pts = self._inner_points(spline)
+        np.testing.assert_allclose(spline.eval_points(pts), spline(pts[:, 0], pts[:, 1]))
 
 
 if __name__ == "__main__":
