@@ -150,6 +150,7 @@ class ExplicitSplineSurface(_SurfaceMetadataMixin, NdBsplExplicit):
         self.accuracy = data.get("accuracy")
         self.fit_status = data.get("fit_status")
         self.excluded_points = None     ## set by load_data()
+        self.data_format = None         ## set by load_data(): "vector" or "matrix"
 
     @staticmethod
     def _policy(extrapolate):
@@ -207,43 +208,109 @@ class ExplicitSplineSurface(_SurfaceMetadataMixin, NdBsplExplicit):
 
     def load_data(self):
         """
-        Load the data points the surface was fitted to (long form: one point per row).
+        Load the data points the surface was fitted to, one ``[x1, x2, y]`` point per row.
 
-        The relation's mapped columns (x1, x2, y) are read from its subset; rows with a gap
-        in one of them are skipped, as on the platform. The relation's exclusion mask for
-        these points is stored in ``self.excluded_points`` (None when nothing is excluded).
+        Long-form relations read their mapped columns (x1, x2, y); rows with a gap in one of
+        them are skipped. Grid (matrix) relations - x1 down a column, x2 in the column
+        headers or in a row, y in the cells - are melted into one point per filled cell,
+        row by row; an empty cell is skipped. Both follow the platform, so the points line
+        up with the relation's exclusion mask, stored in ``self.excluded_points`` (None
+        when nothing is excluded). ``self.data_format`` is ``"vector"`` or ``"matrix"``.
 
         Returns
         -------
         labels : list of str
-            ``[x1, x2, y]`` column labels.
+            ``[x1, x2, y]`` labels.
         data : ndarray
             An (N, 3) array of ``[x1, x2, y]`` points.
         """
         relation = self.load_relation()
-        if relation.get("data_format", "vector") != "vector":
-            raise NotImplementedError("Grid (matrix) relations aren't supported yet")
+        self.data_format = relation.get("data_format", "vector")
         mapping = relation["data_mapping"]
-        columns = [mapping["x1_idx"], mapping["x2_idx"], mapping["y_idx"]]
 
         if not self.subsets:
             self.load_subsets()
-        _, table = self.subsets[0]
+        columns, table = self.subsets[0]
 
-        data = np.full((len(table), 3), np.nan)
-        for j, col in enumerate(columns):
-            for i, value in enumerate(table[:, col]):
-                try:
-                    data[i, j] = float(value)
-                except (TypeError, ValueError):
-                    pass
-        data = data[np.all(np.isfinite(data), axis=1)]
+        if self.data_format == "matrix":
+            data = melt_grid(columns, table, mapping)
+        elif self.data_format == "vector":
+            data = np.column_stack([
+                _as_floats(table[:, col], strict=False)
+                for col in (mapping["x1_idx"], mapping["x2_idx"], mapping["y_idx"])])
+            data = data[np.all(np.isfinite(data), axis=1)]
+        else:
+            raise ValueError("Unknown data format '{}'".format(self.data_format))
 
         excluded = relation.get("excluded_points")
         self.excluded_points = (np.asarray(excluded, dtype=bool)
                                 if excluded is not None and len(excluded) == len(data)
                                 else None)
         return self.labels, data
+
+
+def _as_floats(values, strict=True, what="A value"):
+    """values as a float array; empty cells (None, NaN, "") become NaN. Any other value that
+    isn't a number raises ValueError (strict) or becomes NaN."""
+    result = np.full(len(values), np.nan)
+    for i, value in enumerate(values):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        try:
+            result[i] = float(value)
+        except (TypeError, ValueError):
+            if strict:
+                raise ValueError("{} isn't a number: {!r}".format(what, value))
+    return result
+
+
+def melt_grid(columns, table, mapping):
+    """
+    Points of a grid (matrix) table, melted to long form as SplineCloud does.
+
+    Parameters
+    ----------
+    columns : list of str
+        Column headers (as returned by ``load_subset``).
+    table : ndarray
+        The table, rows by columns.
+    mapping : dict
+        The relation's ``data_mapping``: ``x1_col`` (column of x1 values), ``x2_source``
+        (``"header"``: x2 = the y columns' headers; ``"row"``: x2 = the values of row
+        ``x2_row``, which is then not a data row) and ``y_cols`` (None = every column but
+        x1's).
+
+    Returns
+    -------
+    ndarray
+        An (N, 3) array of ``[x1, x2, y]``: one point per cell with a value whose row has an
+        x1 value, row by row, then column by column.
+    """
+    table = np.asarray(table, dtype=object)
+    x1_col, x2_source = mapping["x1_col"], mapping.get("x2_source", "header")
+    x2_row = mapping.get("x2_row")
+    y_cols = mapping.get("y_cols")
+    if y_cols is None:
+        y_cols = [c for c in range(len(columns)) if c != x1_col]
+
+    if x2_source == "header":
+        x2 = _as_floats([columns[c] for c in y_cols], what="An x2 header")
+    elif x2_source == "row":
+        x2 = _as_floats([table[x2_row, c] for c in y_cols], what="An x2 value")
+    else:
+        raise ValueError("Unknown x2 source '{}'".format(x2_source))
+    if not np.all(np.isfinite(x2)):
+        raise ValueError("Every y column needs an x2 value")
+
+    rows = np.arange(table.shape[0])
+    if x2_source == "row":
+        rows = rows[rows != x2_row]
+    x1 = _as_floats(table[rows, x1_col], what="An x1 value")
+    Y = np.column_stack([_as_floats(table[rows, c], what="A cell") for c in y_cols])
+
+    keep = np.isfinite(Y) & np.isfinite(x1)[:, None]
+    r_idx, c_idx = np.nonzero(keep)                     ## C order, as on the platform
+    return np.column_stack([x1[r_idx], x2[c_idx], Y[r_idx, c_idx]])
 
 
 # =============================================================================

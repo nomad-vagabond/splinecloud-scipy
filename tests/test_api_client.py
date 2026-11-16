@@ -14,6 +14,7 @@ from splinecloud_scipy import (
     ExplicitSplineSurface,
     NdBsplExplicit,
     load_model,
+    melt_grid,
 )
 from responses import matchers
 
@@ -295,6 +296,73 @@ class ExplicitSurfaceClientTests(unittest.TestCase):
         self.assertEqual(labels, ["Re", "Mach", "Cd"])
         np.testing.assert_allclose(data, [[10, 0.1, 1.0], [20, 0.2, 2.0], [40, 0.4, 4.0]])
         np.testing.assert_array_equal(surface.excluded_points, [False, True, False])
+
+    def _add_grid_relation(self, mapping, table, excluded=None):
+        self._add_surface()
+        relation_url = SPLINECLOUD_API_URL + '/relations/bivariate/fitted/dr2_relation0001/'
+        responses.add(responses.GET, relation_url, status=200, json={
+            "uid": "dr2_relation0001", "data_format": "matrix", "data_mapping": mapping,
+            "excluded_points": excluded,
+        })
+        subset_url = SPLINECLOUD_API_URL + '/subsets/sbt_subset000001/'
+        responses.add(responses.GET, subset_url, status=200, json={"table": table})
+
+    @responses.activate
+    def test_load_data_grid_headers(self):
+        ## x1 down the first column, x2 in the headers, one empty cell
+        self._add_grid_relation(
+            {"x1_col": 0, "x2_source": "header", "x2_row": None, "y_cols": None},
+            {"Re \\ Mach": {"0": 10, "1": 20},
+             "0.6": {"0": 1.0, "1": None},
+             "0.8": {"0": 3.0, "1": 4.0}},
+            excluded=[False, True, False])
+        surface = load_spline_surface("srf_fitted000001")
+        labels, data = surface.load_data()
+        self.assertEqual(surface.data_format, "matrix")
+        ## row by row, then column by column; the empty cell is skipped
+        np.testing.assert_allclose(data, [[10, 0.6, 1.0], [10, 0.8, 3.0], [20, 0.8, 4.0]])
+        np.testing.assert_array_equal(surface.excluded_points, [False, True, False])
+
+    @responses.activate
+    def test_load_data_grid_row(self):
+        ## x2 in the first row (empty top-left cell), which isn't a data row; y_cols subset
+        self._add_grid_relation(
+            {"x1_col": 0, "x2_source": "row", "x2_row": 0, "y_cols": [2, 3]},
+            {"A": {"0": None, "1": 1.0, "2": 2.0, "3": None},
+             "B": {"0": 0.1, "1": 5.0, "2": 6.0, "3": 7.0},
+             "C": {"0": 0.2, "1": 8.0, "2": 9.0, "3": 9.5},
+             "D": {"0": 0.3, "1": 10.0, "2": 11.0, "3": 12.0}})
+        surface = load_spline_surface("srf_fitted000001")
+        labels, data = surface.load_data()
+        ## row 3 has no x1 value: none of its cells is a point
+        np.testing.assert_allclose(data, [[1, 0.2, 8], [1, 0.3, 10], [2, 0.2, 9], [2, 0.3, 11]])
+        self.assertIsNone(surface.excluded_points)
+
+    def test_melt_grid_errors(self):
+        table = np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 5.0]])
+        with self.assertRaises(ValueError):    ## a header that isn't an x2 value
+            melt_grid(["x", "0.5", "alpha"], table, {"x1_col": 0, "x2_source": "header"})
+        bad = np.array([[1.0, "n/a", 3.0], [2.0, 4.0, 5.0]], dtype=object)
+        with self.assertRaises(ValueError):    ## a cell that isn't a number
+            melt_grid(["x", "0.5", "0.7"], bad, {"x1_col": 0, "x2_source": "header"})
+        np.testing.assert_allclose(
+            melt_grid(["x", "0.5", "0.7"], table, {"x1_col": 0, "x2_source": "header"}),
+            [[1, 0.5, 2], [1, 0.7, 3], [2, 0.5, 4], [2, 0.7, 5]])
+        ## the x2 row is never a data row, even with a value in its x1 cell
+        np.testing.assert_allclose(
+            melt_grid(["A", "B", "C"], table, {"x1_col": 0, "x2_source": "row", "x2_row": 0}),
+            [[2, 2, 4], [2, 3, 5]])
+
+    @responses.activate
+    def test_load_data_grid_stale_mask(self):
+        ## a mask that doesn't match the points (the data changed) is not applied
+        self._add_grid_relation(
+            {"x1_col": 0, "x2_source": "header", "x2_row": None, "y_cols": None},
+            {"x": {"0": 1, "1": 2}, "0.5": {"0": 1.0, "1": 2.0}, "0.7": {"0": 3.0, "1": 4.0}},
+            excluded=[True, False])
+        surface = load_spline_surface("srf_fitted000001")
+        self.assertEqual(len(surface.load_data()[1]), 4)
+        self.assertIsNone(surface.excluded_points)
 
     @responses.activate
     def test_load_dispatches_on_prefix(self):

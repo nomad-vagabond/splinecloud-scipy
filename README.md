@@ -122,6 +122,13 @@ labels, data = surface.load_data()      # the (N, 3) [x1, x2, y] points it was f
 surface.excluded_points                 # points excluded from the fit (None if none)
 ```
 
+A surface can be fitted to a long table (one row per point, x1 / x2 / y columns) or to a
+grid table, such as a handbook lookup table: x1 down the first column, x2 in the column
+headers (or in the first row), y in the cells. `load_data()` returns the same `[x1, x2, y]`
+points either way. For a grid, that is one point per filled cell, row by row, and
+`surface.data_format` is `"matrix"` (`"vector"` for long tables). `melt_grid(columns, table,
+mapping)` does the same for a table from `load_subset`.
+
 `surface.to_parametric()` returns the same surface as a `ParametricBivariateSpline`.
 
 ## Example of loading data in your code
