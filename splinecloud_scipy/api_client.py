@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import re
 import requests, json
 import numpy as np
 
@@ -249,6 +250,39 @@ class ExplicitSplineSurface(_SurfaceMetadataMixin, NdBsplExplicit):
         return self.labels, data
 
 
+## "<label>=<value>" or "<label>: <value>" grid headers / cells, as SplineCloud reads them
+_LABELED_VALUE = re.compile(r"^\s*(?P<label>[^=:]+?)\s*[=:]\s*(?P<value>\S.*?)\s*$")
+
+
+def _axis_floats(values, what):
+    """A grid axis (x1 cells, x2 headers or row) as floats: numbers, or "<label>=<value>" /
+    "<label>: <value>" entries that all carry one label (case-insensitive; a label holds a
+    letter). Empty entries become NaN; anything else raises ValueError."""
+    result = np.full(len(values), np.nan)
+    labels = set()
+    for i, value in enumerate(values):
+        if value is None or (isinstance(value, float) and np.isnan(value)) or \
+                (isinstance(value, str) and not value.strip()):
+            continue
+        try:
+            result[i] = float(value)
+            continue
+        except (TypeError, ValueError):
+            pass
+        match = _LABELED_VALUE.match(str(value))
+        if match and re.search(r"[^\W\d_]", match.group("label")):
+            try:
+                result[i] = float(match.group("value"))
+                labels.add(match.group("label").casefold())
+                continue
+            except ValueError:
+                pass
+        raise ValueError("{} isn't a number: {!r}".format(what, value))
+    if len(labels) > 1:
+        raise ValueError("{}s carry different labels: {}".format(what, sorted(labels)))
+    return result
+
+
 def _as_floats(values, strict=True, what="A value"):
     """values as a float array; empty cells (None, NaN, "") become NaN. Any other value that
     isn't a number raises ValueError (strict) or becomes NaN."""
@@ -294,9 +328,9 @@ def melt_grid(columns, table, mapping):
         y_cols = [c for c in range(len(columns)) if c != x1_col]
 
     if x2_source == "header":
-        x2 = _as_floats([columns[c] for c in y_cols], what="An x2 header")
+        x2 = _axis_floats([columns[c] for c in y_cols], what="An x2 header")
     elif x2_source == "row":
-        x2 = _as_floats([table[x2_row, c] for c in y_cols], what="An x2 value")
+        x2 = _axis_floats([table[x2_row, c] for c in y_cols], what="An x2 value")
     else:
         raise ValueError("Unknown x2 source '{}'".format(x2_source))
     if not np.all(np.isfinite(x2)):
@@ -305,7 +339,7 @@ def melt_grid(columns, table, mapping):
     rows = np.arange(table.shape[0])
     if x2_source == "row":
         rows = rows[rows != x2_row]
-    x1 = _as_floats(table[rows, x1_col], what="An x1 value")
+    x1 = _axis_floats(table[rows, x1_col], what="An x1 value")
     Y = np.column_stack([_as_floats(table[rows, c], what="A cell") for c in y_cols])
 
     keep = np.isfinite(Y) & np.isfinite(x1)[:, None]

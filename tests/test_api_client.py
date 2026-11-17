@@ -353,6 +353,17 @@ class ExplicitSurfaceClientTests(unittest.TestCase):
             melt_grid(["A", "B", "C"], table, {"x1_col": 0, "x2_source": "row", "x2_row": 0}),
             [[2, 2, 4], [2, 3, 5]])
 
+    def test_melt_grid_labeled_values(self):
+        ## "Re=1e5" headers and "alpha: -4" x1 cells, as on SplineCloud
+        table = np.array([["alpha: -4", 1.0, 2.0], ["alpha: 0", 3.0, 4.0]], dtype=object)
+        np.testing.assert_allclose(
+            melt_grid(["", "Re=1e5", "re=3e5"], table, {"x1_col": 0, "x2_source": "header"}),
+            [[-4, 1e5, 1], [-4, 3e5, 2], [0, 1e5, 3], [0, 3e5, 4]])
+        with self.assertRaises(ValueError):    ## two labels on one axis
+            melt_grid(["", "Re=1e5", "Mach=0.6"], table, {"x1_col": 0, "x2_source": "header"})
+        with self.assertRaises(ValueError):    ## "12:30" isn't a labelled value
+            melt_grid(["", "12:30", "Re=3e5"], table, {"x1_col": 0, "x2_source": "header"})
+
     @responses.activate
     def test_load_data_grid_stale_mask(self):
         ## a mask that doesn't match the points (the data changed) is not applied

@@ -127,7 +127,8 @@ grid table, such as a handbook lookup table: x1 down the first column, x2 in the
 headers (or in the first row), y in the cells. `load_data()` returns the same `[x1, x2, y]`
 points either way. For a grid, that is one point per filled cell, row by row, and
 `surface.data_format` is `"matrix"` (`"vector"` for long tables). `melt_grid(columns, table,
-mapping)` does the same for a table from `load_subset`.
+mapping)` does the same for a table from `load_subset`. Grid headers and x1 cells may be
+labelled, as `Re=1e5` or `Mach: 0.8`, when every value of the axis carries the same label.
 
 `surface.to_parametric()` returns the same surface as a `ParametricBivariateSpline`.
 
