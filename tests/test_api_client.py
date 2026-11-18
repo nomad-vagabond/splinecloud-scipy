@@ -15,6 +15,10 @@ from splinecloud_scipy import (
     NdBsplExplicit,
     load_model,
     melt_grid,
+    load_spline_hypersurface,
+    load_multivariate_relation,
+    SplineHyperSurface,
+    MultivariateRelation,
 )
 from responses import matchers
 
@@ -382,10 +386,209 @@ class ExplicitSurfaceClientTests(unittest.TestCase):
         self.assertIsInstance(load_model(self.SURFACE_URL), ExplicitSplineSurface)
         with self.assertRaises(ValueError):
             load_model("sbt_subset000001")      ## data, not a model: load_subset
-        with self.assertRaises(NotImplementedError):
-            load_model("hsf_hyper0000001")
         with self.assertRaises(ValueError):
             load_model("xyz_unknown00001")
+
+
+def linear_hypersurface_payload(nx=3, log_last=False):
+    """Degree-1 explicit spline of y = x1 + 2 x2 + ... + nx * xn on [0, 2]^nx (clamped knots
+    [0, 0, 1, 2, 2]): its coefficients are y at the nodes 0, 1, 2, so it reproduces y exactly.
+    log_last: the last input is logarithmic, x in [1, 100] (log10 knots), y uses log10 of it."""
+    nodes = np.arange(3.0)
+    grids = np.meshgrid(*[nodes] * nx, indexing="ij")
+    c = sum((d + 1) * g for d, g in enumerate(grids))
+    scales = ["Linear"] * nx + ["Linear"]
+    if log_last:
+        scales[nx - 1] = "Logarithmic"
+    t = [[0.0, 0.0, 1.0, 2.0, 2.0]] * nx
+    return {"v": 1, "nx": nx, "ny": 1, "k": [1] * nx, "t": t, "shape": [3] * nx,
+            "c": c.ravel().tolist(), "domain": [[0.0, 2.0]] * nx, "scales": scales,
+            "extrapolation": "none"}
+
+
+def hypersurface_response(nx=3, log_last=False, uid="hsf_hyper0000001"):
+    names = ["Re", "Pr", "L/D", "Tw"][:nx]
+    return {
+        "uid": uid, "name": "Spline Hypersurface 1", "description": "", "local_id": 1,
+        "data_relation_uid": "drn_relation0001", "relation_name": "Multivariate Relation 1",
+        "form": "explicit", "nx": nx, "spline": linear_hypersurface_payload(nx, log_last),
+        "labels": {"inputs": names, "y": "Nu"},
+        "scales": {"inputs": ["Linear"] * nx, "y": "Linear"},
+        "subset_uids": ["sbt_subset000001"], "method": "rmtb",
+        "fit_params": {"degree": [1] * nx}, "accuracy": {"r2": 1.0, "rmse": 0.0},
+        "fit_status": "ok",
+    }
+
+
+class HypersurfaceClientTests(unittest.TestCase):
+
+    HSF_URL = SPLINECLOUD_API_URL + '/hypersurfaces/hsf_hyper0000001/'
+    REL_URL = SPLINECLOUD_API_URL + '/relations/multivariate/fitted/drn_relation0001/'
+    SUBSET_URL = SPLINECLOUD_API_URL + '/subsets/sbt_subset000001/'
+
+    def _add(self, response=None):
+        responses.add(responses.GET, self.HSF_URL, json=response or hypersurface_response(),
+                      status=200, match=[matchers.query_param_matcher({"spline": "native"})])
+
+    def _add_relation(self, excluded=None, hypersurfaces=None):
+        responses.add(responses.GET, self.REL_URL, status=200, match=[
+            matchers.query_param_matcher({"spline": "native"})], json={
+            "uid": "drn_relation0001", "name": "Multivariate Relation 1", "describ": "",
+            "nx": 3, "subset": {"uid": "sbt_subset000001"},
+            "data_mapping": {"input_idx": [2, 0, 1], "y_idx": 3},
+            "labels": {"inputs": ["Re", "Pr", "L/D"], "y": "Nu"},
+            "scales": {"inputs": ["Linear"] * 3, "y": "Linear"},
+            "excluded_points": excluded, "datapoint_weights": None,
+            "hypersurfaces": hypersurfaces if hypersurfaces is not None
+            else [hypersurface_response()],
+        })
+        responses.add(responses.GET, self.SUBSET_URL, status=200, json={"table": {
+            "pr": {"0": 0.5, "1": 1.0, "2": 1.5, "3": 2.0},
+            "ld": {"0": 0.1, "1": 0.2, "2": 0.3, "3": None},     ## row 3: a gap
+            "re": {"0": 1.0, "1": 1.5, "2": 0.5, "3": 1.0},
+            "nu": {"0": 2.5, "1": 4.1, "2": 3.9, "3": 5.0},
+        }})
+
+    @responses.activate
+    def test_load_and_metadata(self):
+        self._add()
+        hs = load_spline_hypersurface("hsf_hyper0000001")
+        self.assertIsInstance(hs, SplineHyperSurface)
+        self.assertIsInstance(hs, NdBsplExplicit)
+        self.assertEqual(hs.nx, 3)
+        self.assertEqual(hs.labels, ["Re", "Pr", "L/D", "Nu"])
+        self.assertEqual((hs.form, hs.method, hs.fit_status), ("explicit", "rmtb", "ok"))
+        self.assertEqual(hs.relation_uid, "drn_relation0001")
+        self.assertIsInstance(load_spline_hypersurface(self.HSF_URL), SplineHyperSurface)
+
+    @responses.activate
+    def test_evaluation(self):
+        self._add()
+        hs = load_spline_hypersurface("hsf_hyper0000001")
+        y = lambda x1, x2, x3: x1 + 2 * x2 + 3 * x3
+        self.assertAlmostEqual(hs(1.0, 0.5, 1.5), y(1.0, 0.5, 1.5))
+        points = np.array([[0.2, 1.3, 0.7], [2.0, 2.0, 2.0], [0.0, 0.0, 0.0]])
+        np.testing.assert_allclose(hs.eval(points), [y(*p) for p in points])
+        np.testing.assert_allclose(hs(points[:, 0], points[:, 1], points[:, 2]),
+                                   [y(*p) for p in points])
+        grid = hs.eval_grid([0, 1], [0, 1, 2], [0, 0.5, 1, 2])
+        self.assertEqual(grid.shape, (2, 3, 4))
+        self.assertAlmostEqual(grid[1, 2, 1], y(1, 2, 0.5))
+
+    @responses.activate
+    def test_out_of_domain_and_policies(self):
+        self._add()
+        hs = load_spline_hypersurface("hsf_hyper0000001")
+        self.assertTrue(np.isnan(hs(3.0, 0.0, 0.0)))
+        self.assertAlmostEqual(hs.eval([[3.0, 0.0, 0.0]], extrapolate="linear")[0], 3.0)
+        self.assertAlmostEqual(hs.eval([[3.0, 0.0, 0.0]], extrapolate="clamp")[0], 2.0)
+        ## the loading policy overrides the server's suggestion
+        self._add()
+        clamped = load_spline_hypersurface("hsf_hyper0000001", extrapolation="clamp")
+        self.assertAlmostEqual(clamped(3.0, 0.0, 0.0), 2.0)
+        grad = hs.grad([[1.0, 1.0, 1.0], [5.0, 1.0, 1.0]])
+        np.testing.assert_allclose(grad[0], [1.0, 2.0, 3.0])
+        self.assertTrue(np.all(np.isnan(grad[1])))
+
+    @responses.activate
+    def test_slice_by_label_and_index(self):
+        self._add()
+        hs = load_spline_hypersurface("hsf_hyper0000001")
+        surface = hs.slice({"Pr": 1.0})                 ## y(Re, L/D) at Pr = 1
+        self.assertIsInstance(surface, NdBsplExplicit)
+        self.assertEqual(surface.ndim, 2)
+        self.assertAlmostEqual(surface(0.5, 2.0), 0.5 + 2.0 + 6.0)
+        curve = hs.slice({0: 1.0, "L/D": 0.5})          ## y(Pr)
+        self.assertIsInstance(curve, ExplicitUnivariateSpline)
+        self.assertAlmostEqual(curve.eval(2.0), 1.0 + 4.0 + 1.5)
+        with self.assertRaises(ValueError):
+            hs.slice({"Mach": 1.0})
+        with self.assertRaises(ValueError):
+            hs.slice({5: 1.0})
+
+    @responses.activate
+    def test_log_axis(self):
+        self._add(hypersurface_response(log_last=True))
+        hs = load_spline_hypersurface("hsf_hyper0000001")
+        ## x3 = 10 -> log10 = 1; x3 = 100 -> 2
+        self.assertAlmostEqual(hs(1.0, 1.0, 10.0), 1.0 + 2.0 + 3.0)
+        self.assertAlmostEqual(hs(0.0, 0.0, 100.0), 6.0)
+        np.testing.assert_allclose(hs.domain[2], [1.0, 100.0])
+        self.assertTrue(np.isnan(hs(0.0, 0.0, 0.5)))
+
+    @responses.activate
+    def test_four_inputs(self):
+        self._add(hypersurface_response(nx=4))
+        hs = load_spline_hypersurface("hsf_hyper0000001")
+        self.assertEqual(hs.nx, 4)
+        self.assertAlmostEqual(hs(1.0, 1.0, 1.0, 0.5), 1 + 2 + 3 + 2)
+        self.assertEqual(hs.slice({"Tw": 1.0, "Re": 0.0}).ndim, 2)
+
+    @responses.activate
+    def test_wrong_payloads_and_ids(self):
+        surface_like = hypersurface_response()
+        surface_like["spline"] = {**linear_hypersurface_payload(2), "nx": 2}
+        self._add(surface_like)
+        with self.assertRaises(ValueError):
+            load_spline_hypersurface("hsf_hyper0000001")
+        responses.reset()
+        self._add({**hypersurface_response(), "form": "implicit"})
+        with self.assertRaises(ValueError):
+            load_spline_hypersurface("hsf_hyper0000001")
+        with self.assertRaises(ValueError):
+            load_spline_hypersurface("srf_fitted000001")
+        with self.assertRaises(ValueError):
+            load_multivariate_relation("dr2_relation0001")
+
+    @responses.activate
+    def test_load_data(self):
+        self._add()
+        self._add_relation(excluded=[False, True, False])
+        hs = load_spline_hypersurface("hsf_hyper0000001")
+        labels, data = hs.load_data()
+        self.assertEqual(labels, ["Re", "Pr", "L/D", "Nu"])
+        ## inputs in input_idx order (re, pr, ld), then nu; the row with a gap is skipped
+        np.testing.assert_allclose(data, [[1.0, 0.5, 0.1, 2.5], [1.5, 1.0, 0.2, 4.1],
+                                          [0.5, 1.5, 0.3, 3.9]])
+        np.testing.assert_array_equal(hs.excluded_points, [False, True, False])
+
+    @responses.activate
+    def test_load_data_stale_mask(self):
+        self._add()
+        self._add_relation(excluded=[False, True])      ## doesn't match the 3 points
+        hs = load_spline_hypersurface("hsf_hyper0000001")
+        hs.load_data()
+        self.assertIsNone(hs.excluded_points)
+
+    @responses.activate
+    def test_multivariate_relation(self):
+        second = hypersurface_response(uid="hsf_hyper0000002")
+        second["name"] = "Spline Hypersurface 2"
+        self._add_relation(excluded=[True, False, False],
+                           hypersurfaces=[hypersurface_response(), second])
+        relation = load_multivariate_relation("drn_relation0001", extrapolation="clamp")
+        self.assertIsInstance(relation, MultivariateRelation)
+        self.assertEqual((relation.uid, relation.nx, relation.subset_uid),
+                         ("drn_relation0001", 3, "sbt_subset000001"))
+        self.assertEqual(relation.labels, ["Re", "Pr", "L/D", "Nu"])
+        self.assertEqual(relation.data_mapping, {"input_idx": [2, 0, 1], "y_idx": 3})
+        self.assertEqual([h.uid for h in relation.hypersurfaces],
+                         ["hsf_hyper0000001", "hsf_hyper0000002"])
+        hs = relation.hypersurface("Spline Hypersurface 2")
+        self.assertAlmostEqual(hs(3.0, 0.0, 0.0), 2.0)      ## the relation's policy
+        with self.assertRaises(KeyError):
+            relation.hypersurface("missing")
+        labels, data, excluded = relation.load_data()
+        self.assertEqual(data.shape, (3, 4))
+        np.testing.assert_array_equal(excluded, [True, False, False])
+
+    @responses.activate
+    def test_load_model_dispatch(self):
+        self._add()
+        self.assertIsInstance(load_model("hsf_hyper0000001"), SplineHyperSurface)
+        self._add_relation()
+        self.assertIsInstance(load_model("drn_relation0001"), MultivariateRelation)
+        self.assertIsInstance(load_model(self.REL_URL), MultivariateRelation)
 
 
 if __name__ == '__main__':

@@ -250,6 +250,205 @@ class ExplicitSplineSurface(_SurfaceMetadataMixin, NdBsplExplicit):
         return self.labels, data
 
 
+def _long_form(table, colnums):
+    """The points of a long-form relation: the mapped columns as floats, one row per table
+    row with a value in every one of them (rows with a gap are skipped, as on the platform,
+    so the points line up with the relation's exclusion mask)."""
+    data = np.column_stack([_as_floats(table[:, col], strict=False) for col in colnums])
+    return data[np.all(np.isfinite(data), axis=1)]
+
+
+def _mask(values, n_points):
+    """A relation's excluded_points as a bool array, or None (nothing excluded, or a mask
+    that no longer matches the data)."""
+    if values is None or len(values) != n_points:
+        return None
+    return np.asarray(values, dtype=bool)
+
+
+class SplineHyperSurface(NdBsplExplicit):
+    """
+    A fitted spline hypersurface y = f(x1, ..., xn), n >= 3, from the SplineCloud API
+    (``hsf_`` uids; explicit schema v1 with nx >= 3; needs splinecloud-scipy >= 1.5).
+
+    An NdBsplExplicit with SplineCloud metadata. Inputs are in the order of
+    ``input_labels`` (the relation's input columns). Evaluation:
+
+    - ``f(x1, ..., xn)``: pointwise, with NumPy broadcasting (a float for scalars)
+    - ``eval(points)`` / ``eval_points(points)``: ``(m, n)`` points -> ``(m,)`` values
+    - ``eval_grid(x1_vals, ..., xn_vals)``: the outer-product grid, shape ``(n1, ..., nn)``
+    - ``grad(points)``, ``slice({axis: value})`` (an axis is an index or an input label)
+
+    Points outside the fitted domain give NaN unless an extrapolation policy is set
+    (``extrapolation=`` when loading, or ``extrapolate=`` per call: "none", "linear",
+    "clamp", "polynomial"). Logarithmic axes are handled: pass and receive physical values.
+
+    Fit report: ``method``, ``fit_params``, ``accuracy`` and ``fit_status`` (e.g.
+    ``"pending"`` when the relation changed after the fit).
+    """
+
+    def __init__(self, data, extrapolation=None):
+        payload = data["spline"]
+        if payload.get("v") != 1:
+            raise ValueError(f"Unsupported explicit spline schema version: {payload.get('v')}")
+        if (payload.get("nx") or 0) < 3 or payload.get("ny", 1) != 1:
+            raise ValueError("SplineHyperSurface needs an explicit spline with nx >= 3, "
+                             "ny = 1")
+        NdBsplExplicit.__init__(
+            self, payload["t"], payload["k"], payload["c"], scales=payload.get("scales"),
+            extrapolation=extrapolation or payload.get("extrapolation", "none"))
+
+        self.uid = data.get("uid")
+        self.name = data.get("name")
+        self.description = data.get("description")
+        self.form = data.get("form", "explicit")
+        self.relation_uid = data.get("data_relation_uid")
+        self.relation_name = data.get("relation_name")
+        self.subset_uids = data.get("subset_uids", [])
+
+        labels = data.get("labels") or {}
+        self.input_labels = list(labels.get("inputs") or [None] * self.ndim)
+        self.y_label = labels.get("y")
+
+        self.method = data.get("method")
+        self.fit_params = data.get("fit_params")
+        self.accuracy = data.get("accuracy")
+        self.fit_status = data.get("fit_status")
+
+        self.subsets = []
+        self.excluded_points = None     ## set by load_data()
+
+    @property
+    def nx(self) -> int:
+        return self.ndim
+
+    @property
+    def labels(self):
+        """``[x1 label, ..., xn label, y label]``."""
+        return self.input_labels + [self.y_label]
+
+    def axis_index(self, axis) -> int:
+        """An input axis by its index or its label."""
+        if isinstance(axis, (int, np.integer)):
+            if not 0 <= axis < self.ndim:
+                raise ValueError(f"Axis {axis} doesn't exist (inputs 0 .. {self.ndim - 1})")
+            return int(axis)
+        if axis in self.input_labels:
+            if self.input_labels.count(axis) > 1:
+                raise ValueError(f"Several inputs are labelled {axis!r}: use the axis index")
+            return self.input_labels.index(axis)
+        raise ValueError(f"No input labelled {axis!r} (inputs: {self.input_labels})")
+
+    def slice(self, fixed):
+        """
+        Lower-dimensional spline with some inputs fixed, e.g. ``hs.slice({"Pr": 7.0})`` or
+        ``hs.slice({1: 7.0, 2: 30.0})``: exact (the fixed axes are contracted with their
+        B-spline basis values). One free input gives an ExplicitUnivariateSpline, more an
+        NdBsplExplicit; inputs keep their order.
+        """
+        return NdBsplExplicit.slice(self, {self.axis_index(a): v for a, v in fixed.items()})
+
+    def load_subsets(self):
+        """The subsets the hypersurface was fitted to, as (columns, table) tuples (cached)."""
+        if not self.subsets:
+            self.subsets = [load_subset(uid) for uid in self.subset_uids]
+        return self.subsets
+
+    def load_relation(self):
+        """The multivariate relation behind this hypersurface (column mapping, scales, point
+        masks), as returned by /api/relations/multivariate/fitted/<uid>/."""
+        if not self.relation_uid:
+            raise ValueError("This hypersurface has no relation to load")
+        url = SPLINECLOUD_API_URL + "/relations/multivariate/fitted/{}/".format(
+            self.relation_uid)
+        response = requests.get(url, params={"spline": "native"})
+        response.raise_for_status()
+        return json.loads(response.content)
+
+    def load_data(self):
+        """
+        Load the data points the hypersurface was fitted to, one ``[x1, ..., xn, y]`` point
+        per row (rows with a gap in a mapped column are skipped, as on the platform). The
+        relation's exclusion mask lines up with them: ``self.excluded_points`` (None when
+        nothing is excluded).
+
+        Returns
+        -------
+        labels : list of str
+            ``[x1, ..., xn, y]`` labels.
+        data : ndarray
+            An (N, n + 1) array of points.
+        """
+        relation = self.load_relation()
+        mapping = relation["data_mapping"]
+        columns, table = self.load_subsets()[0]
+        data = _long_form(table, list(mapping["input_idx"]) + [mapping["y_idx"]])
+        self.excluded_points = _mask(relation.get("excluded_points"), len(data))
+        return self.labels, data
+
+
+class MultivariateRelation:
+    """
+    A multivariate fitted relation from the SplineCloud API (``drn_`` uids): y = f(x1, ...,
+    xn) over one subset, with its hypersurfaces (``self.hypersurfaces``, SplineHyperSurface
+    objects, also by name through ``hypersurface(name)``).
+
+    Attributes: ``uid``, ``name``, ``description``, ``nx``, ``input_labels``, ``y_label``,
+    ``scales`` (``{"inputs": [...], "y": ...}``), ``data_mapping`` (``{"input_idx": [...],
+    "y_idx": n}``, column indexes of the subset), ``excluded_points`` and
+    ``datapoint_weights`` (one entry per data point, or None), ``subset_uid``.
+    """
+
+    def __init__(self, data, extrapolation=None):
+        self.uid = data.get("uid")
+        self.name = data.get("name")
+        self.description = data.get("describ")
+        self.nx = data.get("nx")
+        labels = data.get("labels") or {}
+        self.input_labels = list(labels.get("inputs") or [])
+        self.y_label = labels.get("y")
+        self.scales = data.get("scales") or {}
+        self.data_mapping = data.get("data_mapping") or {}
+        self.excluded_points = data.get("excluded_points")
+        self.datapoint_weights = data.get("datapoint_weights")
+        self.subset_uid = (data.get("subset") or {}).get("uid")
+        self.hypersurfaces = [SplineHyperSurface(item, extrapolation=extrapolation)
+                              for item in data.get("hypersurfaces") or []]
+        self._subset = None
+
+    @property
+    def labels(self):
+        """``[x1 label, ..., xn label, y label]``."""
+        return self.input_labels + [self.y_label]
+
+    def hypersurface(self, name):
+        """The relation's hypersurface with this name (the first one if several share it)."""
+        for item in self.hypersurfaces:
+            if item.name == name:
+                return item
+        raise KeyError(f"No hypersurface named {name!r} "
+                       f"(available: {[item.name for item in self.hypersurfaces]})")
+
+    def load_data(self):
+        """
+        Load the relation's data points, one ``[x1, ..., xn, y]`` point per row (rows with a
+        gap in a mapped column are skipped, as on the platform), and the exclusion mask
+        lined up with them.
+
+        Returns
+        -------
+        labels : list of str
+        data : ndarray, shape (N, n + 1)
+        excluded : ndarray of bool, shape (N,), or None
+        """
+        if self._subset is None:
+            self._subset = load_subset(self.subset_uid)
+        columns, table = self._subset
+        mapping = self.data_mapping
+        data = _long_form(table, list(mapping["input_idx"]) + [mapping["y_idx"]])
+        return self.labels, data, _mask(self.excluded_points, len(data))
+
+
 ## "<label>=<value>" or "<label>: <value>" grid headers / cells, as SplineCloud reads them
 _LABELED_VALUE = re.compile(r"^\s*(?P<label>[^=:]+?)\s*[=:]\s*(?P<value>\S.*?)\s*$")
 
@@ -470,6 +669,57 @@ def load_spline_surface(surface_id_or_url, extrapolation=None):
     return SplineSurface(data)
 
 
+def _api_url(uid_or_url, prefix, route, what):
+    """A full URL as given, or the API URL of a bare uid with the expected prefix."""
+    if len(uid_or_url.split("/")) > 1:
+        return uid_or_url
+    if not uid_or_url.startswith(prefix) or len(uid_or_url) != 16:
+        raise ValueError(f"Wrong {what} id was specified (expected '{prefix}' and 16 "
+                         "characters)")
+    return SPLINECLOUD_API_URL + "/{}/{}/".format(route, uid_or_url)
+
+
+def load_spline_hypersurface(hypersurface_id_or_url, extrapolation=None):
+    """
+    Fetch a spline hypersurface y = f(x1, ..., xn), n >= 3, from the SplineCloud API.
+
+    Accepts a full URL or a bare hypersurface id (prefix ``hsf_``). ``extrapolation``
+    overrides the server's suggested default policy ("none", "linear", "clamp",
+    "polynomial").
+
+    Returns
+    -------
+    SplineHyperSurface
+
+    Raises ValueError for a spline form this version doesn't know.
+    """
+    url = _api_url(hypersurface_id_or_url, "hsf_", "hypersurfaces", "hypersurface")
+    response = requests.get(url, params={"spline": "native"})
+    response.raise_for_status()
+    data = json.loads(response.content)
+
+    form = data.get("form", "explicit")
+    if form != "explicit":
+        raise ValueError(f"Unsupported hypersurface form '{form}'. "
+                         "Upgrade splinecloud-scipy to load this hypersurface.")
+    return SplineHyperSurface(data, extrapolation=extrapolation)
+
+
+def load_multivariate_relation(relation_id_or_url, extrapolation=None):
+    """
+    Fetch a multivariate fitted relation (prefix ``drn_``) with its hypersurfaces.
+
+    Returns
+    -------
+    MultivariateRelation
+    """
+    url = _api_url(relation_id_or_url, "drn_", "relations/multivariate/fitted",
+                   "multivariate relation")
+    response = requests.get(url, params={"spline": "native"})
+    response.raise_for_status()
+    return MultivariateRelation(json.loads(response.content), extrapolation=extrapolation)
+
+
 def _uid_from(uid_or_url):
     """The uid at the end of a SplineCloud API or web URL (or the uid itself)."""
     parts = [part for part in uid_or_url.split("?")[0].split("/") if part]
@@ -480,9 +730,10 @@ def _uid_from(uid_or_url):
 
 def load_model(uid_or_url):
     """
-    Load a SplineCloud model (a fitted curve or surface) by its uid or URL, dispatching on
-    the uid prefix: ``spl_`` -> curve (load_spline), ``srf_`` -> surface
-    (load_spline_surface). Data is loaded with load_subset.
+    Load a SplineCloud model by its uid or URL, dispatching on the uid prefix: ``spl_`` ->
+    curve (load_spline), ``srf_`` -> surface (load_spline_surface), ``hsf_`` ->
+    hypersurface (load_spline_hypersurface), ``drn_`` -> multivariate relation with its
+    hypersurfaces (load_multivariate_relation). Data is loaded with load_subset.
     """
     uid = _uid_from(uid_or_url)
     prefix = uid[:4]
@@ -491,8 +742,10 @@ def load_model(uid_or_url):
     if prefix == "srf_":
         return load_spline_surface(uid_or_url)
     if prefix == "hsf_":
-        raise NotImplementedError("Spline hypersurfaces (hsf_) need a newer splinecloud-scipy")
+        return load_spline_hypersurface(uid_or_url)
+    if prefix == "drn_":
+        return load_multivariate_relation(uid_or_url)
     if prefix == "sbt_":
         raise ValueError(f"'{uid}' is a subset, not a model: use load_subset")
     raise ValueError(f"Can't load '{uid}': unknown uid prefix '{prefix}' "
-                     "(expected spl_ or srf_)")
+                     "(expected spl_, srf_, hsf_ or drn_)")

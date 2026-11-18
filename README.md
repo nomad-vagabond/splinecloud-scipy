@@ -101,7 +101,7 @@ name (`"linear"`, `"clamp"`, `"polynomial"`, `"none"`).
 ```python
 from splinecloud_scipy import load_model
 
-surface = load_model('srf_xxxxxxxxxxxx')  # a surface uid (load_model also takes spl_ uids)
+surface = load_model('srf_xxxxxxxxxxxx')  # a surface uid (load_model also takes spl_, hsf_, drn_)
 surface.form                            # 'explicit' for fitted surfaces
 surface.eval(4.0, 0.3)                  # y at x1 = 4.0, x2 = 0.3
 X1, X2, Y = surface.eval(x1_values, x2_values)
@@ -131,6 +131,47 @@ mapping)` does the same for a table from `load_subset`. Grid headers and x1 cell
 labelled, as `Re=1e5` or `Mach: 0.8`, when every value of the axis carries the same label.
 
 `surface.to_parametric()` returns the same surface as a `ParametricBivariateSpline`.
+
+## Hypersurfaces: models with 3 or 4 inputs
+
+A hypersurface is a smooth function y = f(x1, ..., xn) with n = 3 or 4 inputs, fitted to a
+table on SplineCloud (a multivariate relation). `load_spline_hypersurface` (or `load_model`
+with an `hsf_` uid) returns a `SplineHyperSurface`. It needs splinecloud-scipy >= 1.5.
+
+```python
+from splinecloud_scipy import load_model
+
+hs = load_model('hsf_xxxxxxxxxxxx')     # a hypersurface uid
+hs.labels                               # ['Re', 'Pr', 'L/D', 'Tw/Tb', 'Nu']: inputs, then y
+hs(1e5, 7.0, 30.0, 1.2)                 # y at one point (inputs in the order of hs.labels)
+hs(re_array, pr_array, ld_array, tw_array)   # pointwise, with NumPy broadcasting
+hs.eval(points)                         # (m, n) points -> (m,) values
+hs.eval_grid(re_values, pr_values, ld_values, tw_values)   # the outer-product grid
+hs.grad(points)                         # (m, n) gradients
+hs.domain                               # [[min, max], ...] per input
+```
+
+Points outside the fitted domain give NaN. Pass a policy to extrapolate, per call
+(`hs.eval(points, extrapolate="linear")`) or when loading
+(`load_spline_hypersurface(uid, extrapolation="clamp")`): `"none"`, `"linear"`, `"clamp"` or
+`"polynomial"`. Logarithmic axes are handled: pass and get physical values.
+
+Fix some inputs to get a lower-dimensional model, by input label or index:
+
+```python
+surface = hs.slice({"L/D": 30.0, "Tw/Tb": 1.2})   # y(Re, Pr): an NdBsplExplicit
+curve = hs.slice({1: 7.0, 2: 30.0, 3: 1.2})       # y(Re): an ExplicitUnivariateSpline
+```
+
+The fit report and the data are there too: `hs.accuracy`, `hs.fit_status` (`'ok'`,
+`'not_converged'` or `'pending'`), `hs.fit_params`, and `labels, data = hs.load_data()` for
+the (N, n + 1) `[x1, ..., xn, y]` points it was fitted to (`hs.excluded_points` marks the ones
+left out of the fit).
+
+`load_multivariate_relation('drn_xxxxxxxxxxxx')` (or `load_model` with a `drn_` uid) returns
+the relation with all its hypersurfaces: `relation.hypersurfaces`,
+`relation.hypersurface("Spline Hypersurface 1")`, `relation.data_mapping` (the input and
+output columns) and `relation.load_data()`.
 
 ## Example of loading data in your code
 
