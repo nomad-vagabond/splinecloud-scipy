@@ -6,6 +6,7 @@ import numpy as np
 from .parametric_spline import ParametricUnivariateSpline
 from .explicit_spline import ExplicitUnivariateSpline, NdBsplExplicit
 from .parametric_spline_surface import ParametricBivariateSpline
+from .parametric_spline_volume import ParametricSplineVolume
 
 
 SPLINECLOUD_API_URL = "https://splinecloud.com/api"
@@ -449,6 +450,104 @@ class MultivariateRelation:
         return self.labels, data, _mask(self.excluded_points, len(data))
 
 
+class SplineVolume(ParametricSplineVolume):
+    """
+    A lofted spline volume y = f(x1, x2, x3) from the SplineCloud API (``hsf_`` uids with
+    ``form == "parametric"``; the parametric volume schema v1, C.7; needs
+    splinecloud-scipy >= 1.5): a ParametricSplineVolume with SplineCloud metadata.
+
+    It is lofted through 2-D models (``stations``: ``[{"x3", "surface_uid"}]`` in x3
+    order, those of its last build) and reproduces each of them at its x3. Inputs are
+    ``[x1, x2, x3]`` (``input_labels``). Evaluation: ``eval(x1, x2, x3)``,
+    ``eval_point(...)``, ``slice_at(x3)``; physical values in and out.
+
+    ``fit_status`` is ``"pending"`` when a station changed after the volume was built.
+    """
+
+    def __init__(self, data):
+        ParametricSplineVolume.__init__(self, data["spline"])
+        self.uid = data.get("uid")
+        self.name = data.get("name")
+        self.description = data.get("description")
+        self.form = data.get("form", "parametric")
+        self.relation_uid = data.get("loft_relation_uid")
+        self.relation_name = data.get("relation_name")
+        labels = data.get("labels") or {}
+        self.input_labels = list(labels.get("inputs") or [None] * 3)
+        self.y_label = labels.get("y")
+        self.stations = list(data.get("stations") or [])
+        self.fit_params = data.get("fit_params")
+        self.fit_status = data.get("fit_status")
+        self._station_surfaces = None
+
+    @property
+    def nx(self) -> int:
+        return 3
+
+    @property
+    def labels(self):
+        """``[x1 label, x2 label, x3 label, y label]``."""
+        return self.input_labels + [self.y_label]
+
+    @property
+    def x3_stations(self):
+        """The x3 values of the stations (physical, ascending)."""
+        return [station["x3"] for station in self.stations]
+
+    def load_station_surfaces(self):
+        """The station surfaces (SplineSurface or ExplicitSplineSurface, in x3 order;
+        cached). Their ``load_data()`` gives each station's data points."""
+        if self._station_surfaces is None:
+            self._station_surfaces = [load_spline_surface(station["surface_uid"])
+                                      for station in self.stations]
+        return self._station_surfaces
+
+    def load_relation(self):
+        """The lofted 3D relation behind this volume (LoftedRelation3D)."""
+        if not self.relation_uid:
+            raise ValueError("This volume has no relation to load")
+        return load_lofted_relation_3d(self.relation_uid)
+
+
+class LoftedRelation3D:
+    """
+    A lofted 3D relation from the SplineCloud API (``lr3_`` uids): y = f(x1, x2, x3)
+    through 2-D models (lofted or fitted surfaces) at x3 values, with its volume.
+
+    Attributes: ``uid``, ``name``, ``description``, ``input_labels`` (``[x1, x2, x3]``),
+    ``y_label``, ``scale_x3``, ``w_degree`` (degree along x3), ``stations`` (``[{"x3_value",
+    "surface_uid", "surface_name", "surface_type", "relation_uid"}]`` in x3 order; a
+    deleted surface gives None), ``volumes`` (SplineVolume objects; one per relation) and
+    ``volume`` (the first, or None).
+    """
+
+    def __init__(self, data):
+        self.uid = data.get("uid")
+        self.name = data.get("name")
+        self.description = data.get("describ")
+        labels = data.get("labels") or {}
+        self.input_labels = list(labels.get("inputs") or [None] * 3)
+        self.y_label = labels.get("y")
+        self.scale_x3 = data.get("scale_x3")
+        self.w_degree = data.get("w_degree")
+        self.stations = list(data.get("stations") or [])
+        self.volumes = [SplineVolume(item) for item in data.get("hypersurfaces") or []]
+
+    @property
+    def volume(self):
+        return self.volumes[0] if self.volumes else None
+
+    @property
+    def labels(self):
+        """``[x1 label, x2 label, x3 label, y label]``."""
+        return self.input_labels + [self.y_label]
+
+    def load_station_surfaces(self):
+        """The current stations' surfaces in x3 order (None for a deleted surface)."""
+        return [load_spline_surface(station["surface_uid"]) if station.get("surface_uid")
+                else None for station in self.stations]
+
+
 ## "<label>=<value>" or "<label>: <value>" grid headers / cells, as SplineCloud reads them
 _LABELED_VALUE = re.compile(r"^\s*(?P<label>[^=:]+?)\s*[=:]\s*(?P<value>\S.*?)\s*$")
 
@@ -690,6 +789,10 @@ def load_spline_hypersurface(hypersurface_id_or_url, extrapolation=None):
     Returns
     -------
     SplineHyperSurface
+        for fitted hypersurfaces (``form == "explicit"``, C.1);
+    SplineVolume
+        for lofted volumes (``form == "parametric"``, C.7; ``extrapolation`` doesn't apply,
+        pass ``extrapolate=`` when evaluating).
 
     Raises ValueError for a spline form this version doesn't know.
     """
@@ -699,10 +802,12 @@ def load_spline_hypersurface(hypersurface_id_or_url, extrapolation=None):
     data = json.loads(response.content)
 
     form = data.get("form", "explicit")
-    if form != "explicit":
-        raise ValueError(f"Unsupported hypersurface form '{form}'. "
-                         "Upgrade splinecloud-scipy to load this hypersurface.")
-    return SplineHyperSurface(data, extrapolation=extrapolation)
+    if form == "explicit":
+        return SplineHyperSurface(data, extrapolation=extrapolation)
+    if form == "parametric":
+        return SplineVolume(data)
+    raise ValueError(f"Unsupported hypersurface form '{form}'. "
+                     "Upgrade splinecloud-scipy to load this hypersurface.")
 
 
 def load_multivariate_relation(relation_id_or_url, extrapolation=None):
@@ -720,6 +825,21 @@ def load_multivariate_relation(relation_id_or_url, extrapolation=None):
     return MultivariateRelation(json.loads(response.content), extrapolation=extrapolation)
 
 
+def load_lofted_relation_3d(relation_id_or_url):
+    """
+    Fetch a lofted 3D relation (prefix ``lr3_``) with its stations and volume.
+
+    Returns
+    -------
+    LoftedRelation3D
+    """
+    url = _api_url(relation_id_or_url, "lr3_", "relations/multivariate/lofted",
+                   "lofted 3D relation")
+    response = requests.get(url, params={"spline": "native"})
+    response.raise_for_status()
+    return LoftedRelation3D(json.loads(response.content))
+
+
 def _uid_from(uid_or_url):
     """The uid at the end of a SplineCloud API or web URL (or the uid itself)."""
     parts = [part for part in uid_or_url.split("?")[0].split("/") if part]
@@ -732,8 +852,9 @@ def load_model(uid_or_url):
     """
     Load a SplineCloud model by its uid or URL, dispatching on the uid prefix: ``spl_`` ->
     curve (load_spline), ``srf_`` -> surface (load_spline_surface), ``hsf_`` ->
-    hypersurface (load_spline_hypersurface), ``drn_`` -> multivariate relation with its
-    hypersurfaces (load_multivariate_relation). Data is loaded with load_subset.
+    hypersurface or lofted volume (load_spline_hypersurface), ``drn_`` -> multivariate
+    relation with its hypersurfaces (load_multivariate_relation), ``lr3_`` -> lofted 3D
+    relation with its volume (load_lofted_relation_3d). Data is loaded with load_subset.
     """
     uid = _uid_from(uid_or_url)
     prefix = uid[:4]
@@ -745,7 +866,9 @@ def load_model(uid_or_url):
         return load_spline_hypersurface(uid_or_url)
     if prefix == "drn_":
         return load_multivariate_relation(uid_or_url)
+    if prefix == "lr3_":
+        return load_lofted_relation_3d(uid_or_url)
     if prefix == "sbt_":
         raise ValueError(f"'{uid}' is a subset, not a model: use load_subset")
     raise ValueError(f"Can't load '{uid}': unknown uid prefix '{prefix}' "
-                     "(expected spl_, srf_, hsf_ or drn_)")
+                     "(expected spl_, srf_, hsf_, drn_ or lr3_)")

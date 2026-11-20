@@ -173,6 +173,34 @@ the relation with all its hypersurfaces: `relation.hypersurfaces`,
 `relation.hypersurface("Spline Hypersurface 1")`, `relation.data_mapping` (the input and
 output columns) and `relation.load_data()`.
 
+## Lofted volumes: 2-D models stacked along a third input
+
+A lofted volume is y = f(x1, x2, x3) built on SplineCloud by stacking 2-D models (lofted or
+fitted surfaces, the *stations*) at values of a third input x3 (a lofted 3D relation). The
+volume passes through every station exactly and is smooth between them. Lofted volumes are
+hypersurfaces too: `load_spline_hypersurface` (or `load_model`) with their `hsf_` uid returns a
+`SplineVolume`. It needs splinecloud-scipy >= 1.5.
+
+```python
+from splinecloud_scipy import load_model
+
+vol = load_model('hsf_xxxxxxxxxxxx')    # a lofted volume's uid
+vol.labels                              # ['eta', 'TR', 'AR', 'cla*']: x1, x2, x3, then y
+vol.x3_stations                         # [6.0, 8.0, 10.0, 12.0]
+vol.eval(0.5, 0.6, 9.0)                 # y at one point
+vol.eval(x1_values, x2_values, x3_values)   # the outer-product grid (NaN where undefined)
+surface = vol.slice_at(9.0)             # the exact surface at x3 = 9: y(x1, x2)
+surface.eval(0.5, 0.6)
+```
+
+x3 outside the stations' range is clamped to it; `vol.eval(..., extrapolate=True)` extends the
+volume a little beyond (up to half the range, `w_distance_threshold`) and lets the slice
+extrapolate in x1 and x2. Logarithmic axes are handled: pass and get physical values.
+
+`vol.load_station_surfaces()` loads the stations (each with `load_data()` for its data
+points). `load_model('lr3_xxxxxxxxxxxx')` (or `load_lofted_relation_3d`) returns the lofted 3D
+relation: `relation.stations` (x3 values and surfaces), `relation.volume`.
+
 ## Example of loading data in your code
 
 ```python
