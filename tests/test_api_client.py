@@ -416,9 +416,9 @@ class ExplicitSurfaceClientTests(unittest.TestCase):
                            "subset_uids": ["sbt_subset000002", "sbt_subset000001"]})
         relation_url = SPLINECLOUD_API_URL + '/relations/bivariate/fitted/dr2_relation0001/'
         sources = [
-            {"subset_uid": "sbt_subset000002", "z": 1.0, "z_mapped": True, "n_points": 2},
-            {"subset_uid": "sbt_subset000001", "z": 2.0, "z_mapped": False, "n_points": 1},
-            {"subset_uid": "sbt_subset000003", "z": None, "z_mapped": True, "n_points": 1},
+            {"subset_uid": "sbt_subset000002", "z": 1.0, "n_points": 2},
+            {"subset_uid": "sbt_subset000001", "z": 2.0, "n_points": 1},
+            {"subset_uid": "sbt_subset000003", "z": None, "n_points": 1},
         ]
         responses.add(responses.GET, relation_url, status=200, json={
             "uid": "dr2_relation0001", "data_format": "stacked", "subset": None,
