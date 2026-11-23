@@ -71,7 +71,7 @@ class ServerVolumeTests(unittest.TestCase):
             volume = ParametricSplineVolume(entry["payload"])
             for x3, server_cp in entry["slices"].items():
                 surface = volume.slice_at(float(x3))
-                cp = np.stack([surface._tck_x1[2], surface._tck_y[2], surface._tck_x2[2]],
+                cp = np.stack([surface._tck_x1[2], surface._tck_x2[2], surface._tck_y[2]],
                               axis=-1).reshape(np.asarray(server_cp).shape)
                 np.testing.assert_allclose(cp, server_cp, rtol=0, atol=1e-12,
                                            err_msg=f"{scale} x3 = {x3}")

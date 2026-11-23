@@ -30,8 +30,8 @@ def get_simple_surface_data():
     # x1=u, x2=v, y=u^2+v^2 (dependent)
     cp = np.zeros((5, 5, 3))
     cp[:, :, 0] = GU              # x1
-    cp[:, :, 1] = GU**2 + GV**2   # y (dependent)
-    cp[:, :, 2] = GV              # x2
+    cp[:, :, 2] = GU**2 + GV**2   # y (dependent)
+    cp[:, :, 1] = GV              # x2
     
     return tu, tv, cp, ku, kv
 
@@ -48,8 +48,8 @@ def get_asymmetric_surface_data():
     
     cp = np.zeros((5, 4, 3))
     cp[:, :, 0] = GU                    # x1
-    cp[:, :, 1] = np.random.rand(5, 4)  # y (dependent)
-    cp[:, :, 2] = GV                    # x2
+    cp[:, :, 2] = np.random.rand(5, 4)  # y (dependent)
+    cp[:, :, 1] = GV                    # x2
     return tu, tv, cp, ku, kv
 
 
@@ -93,14 +93,14 @@ class TestConstruction(unittest.TestCase):
         np.testing.assert_allclose(c, expected_c)
 
     def test_tck_y_structure(self):
-        # _tck_y matches cp[:, :, 1] (dependent axis).
+        # _tck_y matches cp[:, :, 2] (dependent axis).
         tck = self.surf._tck_y
-        np.testing.assert_allclose(tck[2], self.cp[:, :, 1].ravel())
+        np.testing.assert_allclose(tck[2], self.cp[:, :, 2].ravel())
 
     def test_tck_x2_structure(self):
-        # _tck_x2 matches cp[:, :, 2].
+        # _tck_x2 matches cp[:, :, 1].
         tck = self.surf._tck_x2
-        np.testing.assert_allclose(tck[2], self.cp[:, :, 2].ravel())
+        np.testing.assert_allclose(tck[2], self.cp[:, :, 1].ravel())
 
     def test_log_flags_stored_correctly(self):
         surf_log = ParametricBivariateSpline(self.tu, self.tv, self.cp, self.ku, self.kv, 
@@ -118,7 +118,7 @@ class TestConstruction(unittest.TestCase):
 
     def test_search_grid_values_within_physical_extent(self):
         x1min, x1max = self.cp[:, :, 0].min(), self.cp[:, :, 0].max()
-        x2min, x2max = self.cp[:, :, 2].min(), self.cp[:, :, 2].max()
+        x2min, x2max = self.cp[:, :, 1].min(), self.cp[:, :, 1].max()
         
         self.assertTrue(np.all(self.surf._search_x1 >= x1min - 1e-10))
         self.assertTrue(np.all(self.surf._search_x1 <= x1max + 1e-10))
@@ -638,7 +638,7 @@ class TestExtrapolation(unittest.TestCase):
         # near-asymptotic behaviour).
         tu, tv, cp, ku, kv = get_simple_surface_data()
         # Make y very large at u=1 edge
-        cp[-1, :, 1] *= 1000.0  
+        cp[-1, :, 2] *= 1000.0  
         surf_steep = ParametricBivariateSpline(tu, tv, cp, ku, kv)
         
         # Evaluate outside the steep edge
@@ -746,8 +746,8 @@ def get_log_y_surface_data():
 
     cp = np.zeros((5, 5, 3))
     cp[:, :, 0] = GU                        # x1 = u (linear)
-    cp[:, :, 1] = np.log10(10 + GU + GV)    # y in log10 space (dependent)
-    cp[:, :, 2] = GV                        # x2 = v (linear)
+    cp[:, :, 2] = np.log10(10 + GU + GV)    # y in log10 space (dependent)
+    cp[:, :, 1] = GV                        # x2 = v (linear)
 
     return tu, tv, cp, ku, kv
 
@@ -775,8 +775,8 @@ def get_log_x1x2y_surface_data():
 
     cp = np.zeros((5, 5, 3))
     cp[:, :, 0] = log_x1  # x1
-    cp[:, :, 1] = log_y   # y (dependent)
-    cp[:, :, 2] = log_x2  # x2
+    cp[:, :, 2] = log_y   # y (dependent)
+    cp[:, :, 1] = log_x2  # x2
 
     return tu, tv, cp, ku, kv
 

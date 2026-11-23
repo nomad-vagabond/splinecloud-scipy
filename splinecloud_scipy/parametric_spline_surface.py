@@ -8,7 +8,9 @@ class ParametricBivariateSpline:
     Bivariate B-spline surface using explicit knot vectors and control points.
 
     Internally stores three scipy-compatible tck tuples — one per output
-    coordinate (x1, x2, y) — and evaluates via bisplev.
+    coordinate (x1, x2, y) — and evaluates via bisplev. The control net is in role order
+    [x1, x2, y]: the two inputs, then the response (SplineCloud's parametric surface schema
+    v1, as explicit surfaces and lofted volumes).
     """
 
     def __init__(self, tu, tv, cp, ku, kv, w=None,
@@ -19,7 +21,7 @@ class ParametricBivariateSpline:
         tu, tv : 1-D array-like
             Knot vectors along the u and v axes.
         cp : array-like, shape (nu, nv, 3)
-            Control-point grid. cp[i, j] = [x1, y, x2].
+            Control-point grid. cp[i, j] = [x1, x2, y] (inputs, then the response).
         ku, kv : int
             Spline degrees along u and v.
         w : array-like, shape (nu, nv), optional
@@ -38,8 +40,8 @@ class ParametricBivariateSpline:
         self.log_x1, self.log_x2, self.log_y = log_x1, log_x2, log_y
 
         self._tck_x1 = (self.tu, self.tv, cp[:, :, 0].ravel(), self.ku, self.kv)
-        self._tck_y  = (self.tu, self.tv, cp[:, :, 1].ravel(), self.ku, self.kv)
-        self._tck_x2 = (self.tu, self.tv, cp[:, :, 2].ravel(), self.ku, self.kv)
+        self._tck_x2 = (self.tu, self.tv, cp[:, :, 1].ravel(), self.ku, self.kv)
+        self._tck_y  = (self.tu, self.tv, cp[:, :, 2].ravel(), self.ku, self.kv)
 
         self._build_search_grid()
 

@@ -106,7 +106,7 @@ class ParametricSplineVolume:
         basis = BSpline.design_matrix([w], self.tw, self.kw, extrapolate=True).toarray()[0]
         cp = np.tensordot(self.cp, basis, axes=(2, 0))               ## (nu, nv, 4)
         surface = ParametricBivariateSpline(
-            self.tu, self.tv, cp[:, :, [0, 3, 1]], self.ku, self.kv,  ## [x1, y, x2]
+            self.tu, self.tv, cp[:, :, [0, 1, 3]], self.ku, self.kv,  ## [x1, x2, y]
             log_x1=self.log_x1, log_x2=self.log_x2, log_y=self.log_y)
         if len(self._slices) >= SLICE_CACHE_SIZE:
             self._slices.pop(next(iter(self._slices)))

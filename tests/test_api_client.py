@@ -158,12 +158,14 @@ class APIClientTests(unittest.TestCase):
         surface_response = {
             "uid": "srf_1234567890abcdef",
             "spline": {
+                "v": 1, "nx": 2, "ny": 1, "form": "parametric",
                 "tu": tu,
                 "tv": tv,
                 "cp": cp,
                 "w": w,
                 "ku": 2,
-                "kv": 2
+                "kv": 2,
+                "scales": ["Linear", "Linear", "Linear"]
             },
             "surface_type": "lofted",
             "labels": {

@@ -87,7 +87,8 @@ Requires SciPy >= 1.12.
 `load_spline_surface` (or `load_model`) returns the class that matches the surface's `form`:
 
 - **Lofted surfaces** (`form == "parametric"`, built from curves) load as `SplineSurface`, as
-  before.
+  before. Their control points now come in the order `[x1, x2, y]` (inputs, then the
+  response), as for every other model; splinecloud-scipy 1.5 is needed to read them.
 - **Fitted surfaces** (`form == "explicit"`, a smooth surface y = f(x1, x2) fitted to a table
   of points) load as `ExplicitSplineSurface`. They need splinecloud-scipy >= 1.5; older
   versions can only read lofted surfaces.

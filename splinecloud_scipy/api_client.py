@@ -13,6 +13,8 @@ SPLINECLOUD_API_URL = "https://splinecloud.com/api"
 
 
 SPLINE_FORMS = ("parametric", "explicit")
+## lofted surfaces: control net in role order [x1, x2, y] (SplineCloud contract C.3)
+PARAMETRIC_SURFACE_VERSION = 1
 ## extrapolate=True of the legacy surface eval maps to the safest explicit policy
 LEGACY_EXTRAPOLATION = "linear"
 
@@ -73,20 +75,25 @@ class _SurfaceMetadataMixin:
 class SplineSurface(_SurfaceMetadataMixin, ParametricBivariateSpline):
     """
     A lofted (parametric) spline surface from the SplineCloud API: a
-    ParametricBivariateSpline with SplineCloud metadata.
+    ParametricBivariateSpline with SplineCloud metadata. The payload is the parametric
+    surface schema v1: control net in role order [x1, x2, y], scales [x1, x2, y] (needs
+    splinecloud-scipy >= 1.5; earlier versions read the old [x1, y, x2] order).
     """
     def __init__(self, data):
         sp = data["spline"]
-        cp = np.array(sp["cp"], dtype=float)   # (nu, nv, 3)
+        if sp.get("v") != PARAMETRIC_SURFACE_VERSION or sp.get("form", "parametric") != "parametric":
+            raise ValueError("Unsupported lofted surface payload (schema version {}): this "
+                             "client reads the parametric surface schema v1".format(sp.get("v")))
+        cp = np.array(sp["cp"], dtype=float)   # (nu, nv, 3) = [x1, x2, y]
         w  = np.array(sp["w"],  dtype=float)   # (nu, nv)
         tu = np.array(sp["tu"], dtype=float)
         tv = np.array(sp["tv"], dtype=float)
         ku = int(sp["ku"])
         kv = int(sp["kv"])
 
-        log_x1 = data.get("scale_x1") == "Logarithmic"
-        log_x2 = data.get("scale_x2") == "Logarithmic"
-        log_y  = data.get("scale_y")  == "Logarithmic"
+        scales = sp.get("scales") or [data.get("scale_x1"), data.get("scale_x2"),
+                                      data.get("scale_y")]
+        log_x1, log_x2, log_y = (scale == "Logarithmic" for scale in scales)
 
         ParametricBivariateSpline.__init__(
             self, tu, tv, cp, ku, kv, w=w,

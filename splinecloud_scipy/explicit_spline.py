@@ -252,7 +252,7 @@ class NdBsplExplicit:
         Returns
         -------
         ParametricUnivariateSpline (one input) or ParametricBivariateSpline (two inputs,
-        control points ``[x1, y, x2]`` as in lofted surfaces).
+        control points ``[x1, x2, y]`` as in lofted surfaces).
         """
         def normalised(t):
             return (t - t[0]) / (t[-1] - t[0])
@@ -263,7 +263,7 @@ class NdBsplExplicit:
                 log_x=bool(self.log_x[0]), log_y=self.log_y)
         if self.ndim == 2:
             g1, g2 = self._greville(0), self._greville(1)
-            cp = np.stack(np.broadcast_arrays(g1[:, None], self.c, g2[None, :]), axis=-1)
+            cp = np.stack(np.broadcast_arrays(g1[:, None], g2[None, :], self.c), axis=-1)
             return ParametricBivariateSpline(
                 normalised(self.t[0]), normalised(self.t[1]), cp, self.k[0], self.k[1],
                 log_x1=bool(self.log_x[0]), log_x2=bool(self.log_x[1]), log_y=self.log_y)
