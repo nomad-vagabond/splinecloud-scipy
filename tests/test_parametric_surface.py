@@ -1152,3 +1152,50 @@ class TestLogX1X2YScale(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestDegreeOneAndShearedSurfaces(unittest.TestCase):
+    """Surfaces lofted with degree 1 (between two curves, or across curves at kinks), a
+    sheared parametrisation (x1 depends on u and v: the Jacobian isn't diagonal) and inputs
+    of very different widths."""
+
+    @staticmethod
+    def sheared(ku=1, kv=1, scale_x1=1.0):
+        """x1 = s (u + 0.5 v), x2 = 2 v, y = 1 + x1 + 3 x2 (exact for any degree >= 1: control
+        points on a uniform grid reproduce linear maps)."""
+        def knots(k):
+            return np.r_[[0.0] * (k + 1), [1.0] * (k + 1)]
+        U, V = np.meshgrid(np.linspace(0, 1, ku + 1), np.linspace(0, 1, kv + 1), indexing="ij")
+        x1, x2 = scale_x1 * (U + 0.5 * V), 2.0 * V
+        cp = np.stack([x1, x2, 1 + x1 + 3 * x2], axis=-1)
+        return ParametricBivariateSpline(knots(ku), knots(kv), cp, ku, kv)
+
+    def test_degree_one_values_and_gradients(self):
+        for ku, kv in ((1, 1), (3, 1), (1, 2)):
+            surf = self.sheared(ku, kv)
+            y, (g1, g2) = surf.eval_point(0.7, 1.2, compute_gradients=True)
+            self.assertAlmostEqual(y, 1 + 0.7 + 3 * 1.2, places=8)
+            ## the chain rule through a non-diagonal Jacobian: dy/dx1 = 1, dy/dx2 = 3
+            self.assertAlmostEqual(g1, 1.0, places=8)
+            self.assertAlmostEqual(g2, 3.0, places=8)
+
+    def test_grid_matches_points(self):
+        surf = self.sheared(3, 1)
+        X1, X2, Y, G1, G2 = surf.eval_grid([0.4, 0.8], [0.5, 1.5], compute_gradients=True)
+        np.testing.assert_allclose(Y, 1 + X1 + 3 * X2, atol=1e-8)
+        np.testing.assert_allclose(G1, 1.0, atol=1e-8)
+        np.testing.assert_allclose(G2, 3.0, atol=1e-8)
+
+    def test_wide_and_narrow_inputs(self):
+        ## x1 in thousands, x2 in units: the start is chosen in units of each range
+        surf = self.sheared(3, 1, scale_x1=10000.0)
+        x1, x2 = 10000.0 * (0.3 + 0.5 * 0.9), 2.0 * 0.9
+        self.assertAlmostEqual(surf.eval_point(x1, x2), 1 + x1 + 3 * x2, delta=1e-6 * x1)
+
+    def test_derivatives_beyond_the_degree(self):
+        surf = self.sheared(1, 1)
+        u, v = 0.3, 0.6
+        self.assertEqual(surf._bisplev_d2(u, v, surf._tck_x1, du=2), 0.0)
+        ## bilinear patches have a mixed derivative: here x1 is linear, so 0; y too
+        self.assertAlmostEqual(surf._bisplev_d2(u, v, surf._tck_y, du=1, dv=1), 0.0)
+        self.assertAlmostEqual(surf._derivative(surf._tck_x1, u, v, 0, 1), 0.5)

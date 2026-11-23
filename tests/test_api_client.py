@@ -205,15 +205,14 @@ class APIClientTests(unittest.TestCase):
 def lofted_level_response():
     """A lofted surface whose relation models the curves' level (response_axis "z"): its
     contour lines y(x) at levels z of z = 1 + x + 2 y, the net in role order [x, y, z]
-    (biquadratic with control points on a uniform grid: exact on x in [0, 4], y in [0, 2];
-    degree 2, as the client's Newton step needs - degree 1 is a known open issue)."""
-    cp = [[[x, y, 1 + x + 2 * y] for y in (0.0, 1.0, 2.0)] for x in (0.0, 2.0, 4.0)]
+    (bilinear, as a loft between two curves: exact on x in [0, 4], y in [0, 2])."""
+    cp = [[[0.0, 0.0, 1.0], [0.0, 2.0, 5.0]], [[4.0, 0.0, 5.0], [4.0, 2.0, 9.0]]]
     return {
         "uid": "srf_lofted000001", "name": "Loft Surface 1", "form": "parametric",
         "surface_type": "lofted",
-        "spline": {"v": 1, "nx": 2, "ny": 1, "form": "parametric", "tu": [0, 0, 0, 1, 1, 1],
-                   "tv": [0, 0, 0, 1, 1, 1], "ku": 2, "kv": 2, "cp": cp,
-                   "w": [[1, 1, 1]] * 3, "scales": ["Linear", "Linear", "Linear"]},
+        "spline": {"v": 1, "nx": 2, "ny": 1, "form": "parametric", "tu": [0, 0, 1, 1],
+                   "tv": [0, 0, 1, 1], "ku": 1, "kv": 1, "cp": cp, "w": [[1, 1], [1, 1]],
+                   "scales": ["Linear", "Linear", "Linear"]},
         "labels": {"x1": "Easting", "x2": "Northing", "y": "Altitude"},
         "response_axis": "z",
         "variables": {"x": "Easting", "y": "Northing", "z": "Altitude"},

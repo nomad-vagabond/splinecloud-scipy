@@ -1,6 +1,6 @@
 import requests, json
 import numpy as np
-from scipy.interpolate import bisplev
+from scipy.interpolate import bisplev, NdBSpline
 
 
 class ParametricBivariateSpline:
@@ -42,6 +42,11 @@ class ParametricBivariateSpline:
         self._tck_x1 = (self.tu, self.tv, cp[:, :, 0].ravel(), self.ku, self.kv)
         self._tck_x2 = (self.tu, self.tv, cp[:, :, 1].ravel(), self.ku, self.kv)
         self._tck_y  = (self.tu, self.tv, cp[:, :, 2].ravel(), self.ku, self.kv)
+        ## derivatives come from NdBSpline: FITPACK's bisplev refuses an order >= the degree,
+        ## e.g. the first derivatives of a degree-1 (bilinear-in-v) loft
+        self._derivative_splines = {
+            id(tck): NdBSpline((self.tu, self.tv), cp[:, :, axis], (self.ku, self.kv))
+            for axis, tck in enumerate((self._tck_x1, self._tck_x2, self._tck_y))}
 
         self._build_search_grid()
 
@@ -104,52 +109,93 @@ class ParametricBivariateSpline:
         self._search_x2 = np.atleast_2d(bisplev(self._search_u, self._search_v, self._tck_x2)).reshape(len(self._search_u), len(self._search_v))
         self._search_y  = np.atleast_2d(bisplev(self._search_u, self._search_v, self._tck_y)).reshape(len(self._search_u), len(self._search_v))
 
-    def _bisplev_d2(self, u, v, tck, du=0, dv=0, eps=1e-7):
+    def _derivative(self, tck, u, v, du=0, dv=0):
         """
-        Evaluate a second-order (or mixed) derivative of a bivariate spline,
-        working around the bisplev constraint that derivative order must be
-        strictly less than the spline degree (dx < kx).
-
-        For degree >= 3: uses bisplev directly.
-        For degree == 2: the second derivative is piecewise constant;
-                         computed via finite differences of the first derivative.
-        For degree <= 1: returns 0 (linear or constant spline).
-
-        Parameters
-        ----------
-        du, dv : int
-            Derivative orders along u and v (each 0, 1, or 2, with du+dv <= 2).
+        A derivative of one coordinate (the spline of `tck`) at the parameter point (u, v),
+        exact for any order and degree: orders up to the degree are piecewise polynomials,
+        higher orders are 0. (FITPACK's bisplev only takes orders below the degree, which
+        rules out the first derivatives of a degree-1 surface.)
         """
-        # Pure second derivative w.r.t. u
-        if du == 2 and dv == 0:
-            if self.ku >= 3:
-                return float(bisplev(u, v, tck, dx=2, dy=0))
-            elif self.ku >= 2:
-                fp = float(bisplev(u + eps, v, tck, dx=1, dy=0))
-                fm = float(bisplev(u - eps, v, tck, dx=1, dy=0))
-                return (fp - fm) / (2 * eps)
-            else:
-                return 0.0
+        du, dv = int(du), int(dv)
+        if du < tck[3] and dv < tck[4]:
+            ## below the degree: FITPACK, the faster per point
+            return float(bisplev(u, v, tck, dx=du, dy=dv))
+        spline = self._derivative_splines[id(tck)]
+        return float(spline(np.array([[float(u), float(v)]]), nu=(du, dv))[0])
 
-        # Pure second derivative w.r.t. v
-        if du == 0 and dv == 2:
-            if self.kv >= 3:
-                return float(bisplev(u, v, tck, dx=0, dy=2))
-            elif self.kv >= 2:
-                fp = float(bisplev(u, v + eps, tck, dx=0, dy=1))
-                fm = float(bisplev(u, v - eps, tck, dx=0, dy=1))
-                return (fp - fm) / (2 * eps)
-            else:
-                return 0.0
+    def _seeds(self, x1, x2, n_seeds=4):
+        """The search-grid parameters nearest to (x1, x2), nearest first - distances measured
+        in units of each coordinate's range, so a wide axis (thousands) doesn't decide alone
+        against a narrow one."""
+        sx1, sx2 = self._search_x1.ravel(), self._search_x2.ravel()
+        r1 = float(np.ptp(sx1)) or 1.0
+        r2 = float(np.ptp(sx2)) or 1.0
+        dist2 = ((sx1 - x1) / r1) ** 2 + ((sx2 - x2) / r2) ** 2
+        su = np.repeat(self._search_u, len(self._search_v))
+        sv = np.tile(self._search_v, len(self._search_u))
+        return [(su[i], sv[i]) for i in np.argsort(dist2)[:n_seeds]]
 
-        # Mixed derivative d²/dudv
-        if du == 1 and dv == 1:
-            if self.ku >= 2 and self.kv >= 2:
-                return float(bisplev(u, v, tck, dx=1, dy=1))
-            else:
-                return 0.0
+    def _jacobian(self, u, v):
+        """d(x1, x2) / d(u, v) at (u, v)."""
+        return np.array([
+            [self._derivative(self._tck_x1, u, v, 1, 0), self._derivative(self._tck_x1, u, v, 0, 1)],
+            [self._derivative(self._tck_x2, u, v, 1, 0), self._derivative(self._tck_x2, u, v, 0, 1)]])
 
-        raise ValueError(f"Unsupported derivative order du={du}, dv={dv}")
+    def _solve_uv(self, x1, x2, tol=1e-10, max_iter=50, n_seeds=4):
+        """
+        The parameters (u, v) where the surface reaches (x1, x2) (scaled space), and the
+        Jacobian there: Newton from the nearest search-grid points in turn, each step halved
+        until it reduces the residual (measured in units of the coordinates' ranges) - so
+        steps across the kinks of a degree-1 direction, or along a much wider axis, don't
+        bounce. None when no start converges (the point lies outside the surface's domain).
+        """
+        u_min, u_max = self.tu[self.ku], self.tu[-(self.ku + 1)]
+        v_min, v_max = self.tv[self.kv], self.tv[-(self.kv + 1)]
+        tol_x1 = tol * (1 + abs(x1))
+        tol_x2 = tol * (1 + abs(x2))
+        r1 = float(np.ptp(self._search_x1)) or 1.0
+        r2 = float(np.ptp(self._search_x2)) or 1.0
+
+        def residual(u, v):
+            return np.array([float(bisplev(u, v, self._tck_x1)) - x1,
+                             float(bisplev(u, v, self._tck_x2)) - x2])
+
+        def size(F):
+            return (F[0] / r1) ** 2 + (F[1] / r2) ** 2
+
+        for u, v in self._seeds(x1, x2, n_seeds):
+            F = residual(u, v)
+            for _ in range(max_iter):
+                if abs(F[0]) < tol_x1 and abs(F[1]) < tol_x2:
+                    return u, v, self._jacobian(u, v)
+                try:
+                    delta = np.linalg.solve(self._jacobian(u, v), -F)
+                except np.linalg.LinAlgError:
+                    break
+                step, moved = 1.0, False
+                for _ in range(12):
+                    un = float(np.clip(u + step * delta[0], u_min, u_max))
+                    vn = float(np.clip(v + step * delta[1], v_min, v_max))
+                    Fn = residual(un, vn)
+                    if size(Fn) < size(F):
+                        u, v, F, moved = un, vn, Fn, True
+                        break
+                    step *= 0.5
+                if not moved:
+                    break
+            if abs(F[0]) < tol_x1 and abs(F[1]) < tol_x2:
+                return u, v, self._jacobian(u, v)
+        return None
+
+    def _bisplev_d2(self, u, v, tck, du=0, dv=0, eps=None):
+        """
+        A second-order (or mixed) derivative of a coordinate: d2/du2 (du=2), d2/dv2 (dv=2)
+        or d2/dudv (du=dv=1), exact for every degree (see _derivative). `eps` is accepted
+        for compatibility and unused.
+        """
+        if (du, dv) not in ((2, 0), (0, 2), (1, 1)):
+            raise ValueError(f"Unsupported derivative order du={du}, dv={dv}")
+        return self._derivative(tck, u, v, du, dv)
 
     def _compute_boundary_point(self, x1, x2):
         """
@@ -209,8 +255,8 @@ class ParametricBivariateSpline:
         # --- Evaluate all derivatives at boundary point ------------------
         def _eval_derivs(tck, u, v):
             val   = float(bisplev(u, v, tck))
-            du    = float(bisplev(u, v, tck, dx=1, dy=0))
-            dv    = float(bisplev(u, v, tck, dx=0, dy=1))
+            du    = float(self._derivative(tck, u, v, 1, 0))
+            dv    = float(self._derivative(tck, u, v, 0, 1))
             du2   = self._bisplev_d2(u, v, tck, du=2, dv=0)
             dv2   = self._bisplev_d2(u, v, tck, du=0, dv=2)
             dudv  = self._bisplev_d2(u, v, tck, du=1, dv=1)
@@ -256,13 +302,13 @@ class ParametricBivariateSpline:
             x2b = float(bisplev(u, v, self._tck_x2))
 
             if free_u:
-                dx1dt = float(bisplev(u, v, self._tck_x1, dx=1, dy=0))
-                dx2dt = float(bisplev(u, v, self._tck_x2, dx=1, dy=0))
+                dx1dt = float(self._derivative(self._tck_x1, u, v, 1, 0))
+                dx2dt = float(self._derivative(self._tck_x2, u, v, 1, 0))
                 d2x1dt2 = self._bisplev_d2(u, v, self._tck_x1, du=2, dv=0)
                 d2x2dt2 = self._bisplev_d2(u, v, self._tck_x2, du=2, dv=0)
             else:
-                dx1dt = float(bisplev(u, v, self._tck_x1, dx=0, dy=1))
-                dx2dt = float(bisplev(u, v, self._tck_x2, dx=0, dy=1))
+                dx1dt = float(self._derivative(self._tck_x1, u, v, 0, 1))
+                dx2dt = float(self._derivative(self._tck_x2, u, v, 0, 1))
                 d2x1dt2 = self._bisplev_d2(u, v, self._tck_x1, du=0, dv=2)
                 d2x2dt2 = self._bisplev_d2(u, v, self._tck_x2, du=0, dv=2)
 
@@ -373,7 +419,8 @@ class ParametricBivariateSpline:
             # Boundary gradient in physical space via implicit function theorem
             grad_uv = np.array([dSdu[2], dSdv[2]])
             try:
-                grad_x1x2 = np.linalg.solve(J, grad_uv)
+                ## grad_uv = J^T grad_x1x2 (chain rule; J = d(x1, x2)/d(u, v))
+                grad_x1x2 = np.linalg.solve(J.T, grad_uv)
             except np.linalg.LinAlgError:
                 return _failed
 
@@ -403,7 +450,7 @@ class ParametricBivariateSpline:
         grad_uv_ext = np.array([dydu_ext, dydv_ext])
 
         try:
-            grad_x1x2_ext = np.linalg.solve(J, grad_uv_ext)
+            grad_x1x2_ext = np.linalg.solve(J.T, grad_uv_ext)
         except np.linalg.LinAlgError:
             return _failed
 
@@ -511,61 +558,20 @@ class ParametricBivariateSpline:
         if self.log_x1: x1 = np.log10(x1)
         if self.log_x2: x2 = np.log10(x2)
 
-        # --- Knot domain boundaries ---
-        u_min, u_max = self.tu[self.ku], self.tu[-(self.ku + 1)]
-        v_min, v_max = self.tv[self.kv], self.tv[-(self.kv + 1)]
-
-        # --- Initial guess from search grid ---
-        sx1 = self._search_x1.ravel()
-        sx2 = self._search_x2.ravel()
-        su = np.repeat(self._search_u, len(self._search_v))
-        sv = np.tile(self._search_v, len(self._search_u))
-
-        dist2 = (sx1 - x1)**2 + (sx2 - x2)**2
-        best  = np.argmin(dist2)
-        u, v  = su[best], sv[best]
-
-        # --- Newton's method — keep final Jacobian if needed ---
-        # Use relative tolerance to handle large physical-space values
-        tol_x1 = tol * (1 + abs(x1))
-        tol_x2 = tol * (1 + abs(x2))
-
-        J = None
-        for _ in range(max_iter):
-            fx1 = float(bisplev(u, v, self._tck_x1)) - x1
-            fx2 = float(bisplev(u, v, self._tck_x2)) - x2
-
-            if abs(fx1) < tol_x1 and abs(fx2) < tol_x2:
-                break
-
-            dx1du = float(bisplev(u, v, self._tck_x1, dx=1, dy=0))
-            dx1dv = float(bisplev(u, v, self._tck_x1, dx=0, dy=1))
-            dx2du = float(bisplev(u, v, self._tck_x2, dx=1, dy=0))
-            dx2dv = float(bisplev(u, v, self._tck_x2, dx=0, dy=1))
-
-            J = np.array([[dx1du, dx1dv], [dx2du, dx2dv]])
-            F = np.array([fx1, fx2])
-
-            try:
-                delta = np.linalg.solve(J, -F)
-            except np.linalg.LinAlgError:
-                break
-
-            u = np.clip(u + delta[0], u_min, u_max)
-            v = np.clip(v + delta[1], v_min, v_max)
-        else:
-            ## no solution found (point may be ouside the defined domain)
+        # --- (u, v) where the surface reaches (x1, x2) ---
+        solved = self._solve_uv(x1, x2, tol=tol, max_iter=max_iter)
+        if solved is None:
+            ## no solution found (the point lies outside the defined domain)
             if extrapolate:
                 return self._extrapolate_point(
                     x1, x2, compute_gradients=compute_gradients,
                     limit_distance=limit_distance, limit_consistency=limit_consistency,
                     limit_steepness=limit_steepness, consistency_threshold=consistency_threshold,
                     distance_threshold=distance_threshold, steepness_threshold=steepness_threshold)
-            else:
-                if compute_gradients:
-                    return None, (None, None)
-                else:
-                    return None
+            if compute_gradients:
+                return None, (None, None)
+            return None
+        u, v, J = solved
 
         y = float(bisplev(u, v, self._tck_y))
 
@@ -575,12 +581,13 @@ class ParametricBivariateSpline:
             return y
 
         # --- Gradients via implicit function theorem ---
-        dydu = float(bisplev(u, v, self._tck_y, dx=1, dy=0))
-        dydv = float(bisplev(u, v, self._tck_y, dx=0, dy=1))
+        dydu = float(self._derivative(self._tck_y, u, v, 1, 0))
+        dydv = float(self._derivative(self._tck_y, u, v, 0, 1))
         grad_uv = np.array([dydu, dydv])
 
         try:
-            grad_x1x2 = np.linalg.solve(J, grad_uv)
+            ## grad_uv = J^T grad_x1x2 (chain rule; J = d(x1, x2)/d(u, v))
+            grad_x1x2 = np.linalg.solve(J.T, grad_uv)
         except np.linalg.LinAlgError:
             grad_x1x2 = np.array([np.nan, np.nan])
 
@@ -640,8 +647,11 @@ class ParametricBivariateSpline:
         su = np.repeat(self._search_u, len(self._search_v))
         sv = np.tile(self._search_v, len(self._search_u))
 
-        dist2 = (sx1[None, :] - x1_flat[:, None])**2 + \
-                (sx2[None, :] - x2_flat[:, None])**2
+        ## in units of each coordinate's range (see _seeds)
+        r1 = float(np.ptp(sx1)) or 1.0
+        r2 = float(np.ptp(sx2)) or 1.0
+        dist2 = ((sx1[None, :] - x1_flat[:, None]) / r1)**2 + \
+                ((sx2[None, :] - x2_flat[:, None]) / r2)**2
         best = np.argmin(dist2, axis=1)
         u = su[best].copy()
         v = sv[best].copy()
@@ -679,13 +689,13 @@ class ParametricBivariateSpline:
             ua, va = ua[still], va[still]
             fx1, fx2 = fx1[still], fx2[still]
 
-            dx1du = np.array([bisplev(ui, vi, self._tck_x1, dx=1, dy=0)
+            dx1du = np.array([self._derivative(self._tck_x1, ui, vi, 1, 0)
                             for ui, vi in zip(ua, va)])
-            dx1dv = np.array([bisplev(ui, vi, self._tck_x1, dx=0, dy=1)
+            dx1dv = np.array([self._derivative(self._tck_x1, ui, vi, 0, 1)
                             for ui, vi in zip(ua, va)])
-            dx2du = np.array([bisplev(ui, vi, self._tck_x2, dx=1, dy=0)
+            dx2du = np.array([self._derivative(self._tck_x2, ui, vi, 1, 0)
                             for ui, vi in zip(ua, va)])
-            dx2dv = np.array([bisplev(ui, vi, self._tck_x2, dx=0, dy=1)
+            dx2dv = np.array([self._derivative(self._tck_x2, ui, vi, 0, 1)
                             for ui, vi in zip(ua, va)])
 
             if compute_gradients:
@@ -702,6 +712,15 @@ class ParametricBivariateSpline:
 
             u[idx[still]] = np.clip(u[idx[still]] + du, u_min, u_max)
             v[idx[still]] = np.clip(v[idx[still]] + dv, v_min, v_max)
+
+        # --- Points plain Newton didn't converge on: the robust solver ----
+        for fi in np.where(active)[0]:
+            solved = self._solve_uv(x1_flat[fi], x2_flat[fi], tol=tol, max_iter=max_iter)
+            if solved is not None:
+                u[fi], v[fi], J_fi = solved
+                active[fi] = False
+                if compute_gradients:
+                    J_final[fi] = J_fi
 
         # --- Final y evaluation ------------------------------------------
         Y_flat = np.array([bisplev(ui, vi, self._tck_y)
@@ -753,9 +772,12 @@ class ParametricBivariateSpline:
         conv = ~failed
         if conv.any():
             conv_idx = np.where(conv)[0]
-            dydu = np.array([bisplev(u[i], v[i], self._tck_y, dx=1, dy=0)
+            ## the Jacobian at the solution (the loop kept the last step's)
+            for i in conv_idx:
+                J_final[i] = self._jacobian(u[i], v[i])
+            dydu = np.array([self._derivative(self._tck_y, u[i], v[i], 1, 0)
                             for i in conv_idx])
-            dydv = np.array([bisplev(u[i], v[i], self._tck_y, dx=0, dy=1)
+            dydv = np.array([self._derivative(self._tck_y, u[i], v[i], 0, 1)
                             for i in conv_idx])
             grad_uv = np.stack([dydu, dydv], axis=1)
 
@@ -763,14 +785,15 @@ class ParametricBivariateSpline:
                    J_final[conv_idx, 0, 1] * J_final[conv_idx, 1, 0])
             safe = np.abs(det) > 1e-14
 
+            ## grad_x1x2 = J^-T grad_uv (chain rule; J = d(x1, x2)/d(u, v))
             dydx1_flat[conv_idx] = np.where(
                 safe,
                 ( J_final[conv_idx, 1, 1] * grad_uv[:, 0] -
-                  J_final[conv_idx, 0, 1] * grad_uv[:, 1]) / det,
+                  J_final[conv_idx, 1, 0] * grad_uv[:, 1]) / det,
                 np.nan)
             dydx2_flat[conv_idx] = np.where(
                 safe,
-                (-J_final[conv_idx, 1, 0] * grad_uv[:, 0] +
+                (-J_final[conv_idx, 0, 1] * grad_uv[:, 0] +
                   J_final[conv_idx, 0, 0] * grad_uv[:, 1]) / det,
                 np.nan)
 
