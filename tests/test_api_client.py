@@ -16,6 +16,7 @@ from splinecloud_scipy import (
     load_model,
     melt_grid,
     stack_subsets,
+    role_variables,
     load_spline_hypersurface,
     load_multivariate_relation,
     SplineHyperSurface,
@@ -199,6 +200,69 @@ class APIClientTests(unittest.TestCase):
         
         self.assertEqual(surface.subset_uids, ["sbt_ABCD", "sbt_EFGH", "sbt_IJKL", "sbt_MNOP"])
         self.assertEqual(surface.relation_uid, "lr2_qwerty")
+
+
+def lofted_level_response():
+    """A lofted surface whose relation models the curves' level (response_axis "z"): its
+    contour lines y(x) at levels z of z = 1 + x + 2 y, the net in role order [x, y, z]
+    (biquadratic with control points on a uniform grid: exact on x in [0, 4], y in [0, 2];
+    degree 2, as the client's Newton step needs - degree 1 is a known open issue)."""
+    cp = [[[x, y, 1 + x + 2 * y] for y in (0.0, 1.0, 2.0)] for x in (0.0, 2.0, 4.0)]
+    return {
+        "uid": "srf_lofted000001", "name": "Loft Surface 1", "form": "parametric",
+        "surface_type": "lofted",
+        "spline": {"v": 1, "nx": 2, "ny": 1, "form": "parametric", "tu": [0, 0, 0, 1, 1, 1],
+                   "tv": [0, 0, 0, 1, 1, 1], "ku": 2, "kv": 2, "cp": cp,
+                   "w": [[1, 1, 1]] * 3, "scales": ["Linear", "Linear", "Linear"]},
+        "labels": {"x1": "Easting", "x2": "Northing", "y": "Altitude"},
+        "response_axis": "z",
+        "variables": {"x": "Easting", "y": "Northing", "z": "Altitude"},
+        "subset_uids": ["sbt_level0000001", "sbt_level0000002"], "x2_values": [3.0, 5.0],
+        "curve_uids": [], "relation_uid": "lr2_relation0001", "relation_name": "Terrain",
+        "scale_x1": "Linear", "scale_x2": "Linear", "scale_y": "Linear",
+    }
+
+
+class LoftedResponseAxisTests(unittest.TestCase):
+    """Lofted surfaces whose relation models another of its curves' variables (response
+    axis): evaluation and data follow the roles."""
+
+    URL = SPLINECLOUD_API_URL + '/surfaces/srf_lofted000001/'
+
+    def _load(self):
+        responses.add(responses.GET, self.URL, json=lofted_level_response(), status=200)
+        return load_spline_surface("srf_lofted000001")
+
+    def test_role_variables(self):
+        self.assertEqual(role_variables("y"), {"x1": "x", "x2": "z", "y": "y"})
+        self.assertEqual(role_variables("z"), {"x1": "x", "x2": "y", "y": "z"})
+        self.assertEqual(role_variables("x"), {"x1": "y", "x2": "z", "y": "x"})
+        with self.assertRaises(ValueError):
+            role_variables("w")
+
+    @responses.activate
+    def test_evaluates_the_response(self):
+        surface = self._load()
+        self.assertEqual(surface.response_axis, "z")
+        self.assertEqual(surface.variables["z"], "Altitude")
+        self.assertEqual(surface.labels, ["Easting", "Northing", "Altitude"])
+        ## altitude at (easting, northing): the inputs are the first two coordinates
+        self.assertAlmostEqual(surface.eval(1.5, 0.5), 1 + 1.5 + 2 * 0.5, places=8)
+        X1, X2, Y = surface.eval([1.0, 3.0], [0.25, 1.75])
+        np.testing.assert_allclose(Y, 1 + X1 + 2 * X2, atol=1e-8)
+
+    @responses.activate
+    def test_load_data_in_roles(self):
+        surface = self._load()
+        for uid, rows in (("sbt_level0000001", {"x": {"0": 0.0, "1": 2.0},
+                                                "y": {"0": 1.0, "1": 0.0}}),
+                          ("sbt_level0000002", {"x": {"0": 0.0}, "y": {"0": 2.0}})):
+            responses.add(responses.GET, SPLINECLOUD_API_URL + '/subsets/{}/'.format(uid),
+                          status=200, json={"table": rows})
+        labels, data = surface.load_data()
+        self.assertEqual(labels, ["Easting", "Northing", "Altitude"])
+        ## [x, y, level]: the level last, as the response
+        np.testing.assert_allclose(data, [[0.0, 1.0, 3.0], [2.0, 0.0, 3.0], [0.0, 2.0, 5.0]])
 
 
 def explicit_surface_response(uid="srf_fitted000001", relation_uid="dr2_relation0001"):

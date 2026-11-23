@@ -15,6 +15,19 @@ SPLINECLOUD_API_URL = "https://splinecloud.com/api"
 SPLINE_FORMS = ("parametric", "explicit")
 ## lofted surfaces: control net in role order [x1, x2, y] (SplineCloud contract C.3)
 PARAMETRIC_SURFACE_VERSION = 1
+
+## the variables a lofted or stacked relation is built from: its curves' / subsets' x and y,
+## and the constant z each one stands at (a curve's level, a subset's z value)
+VARIABLES = ("x", "y", "z")
+
+
+def role_variables(response_axis):
+    """{"x1", "x2", "y": variable}: the inputs are the variables other than the response, in
+    (x, y, z) order; y is the response. E.g. "z" -> {"x1": "x", "x2": "y", "y": "z"}."""
+    if response_axis not in VARIABLES:
+        raise ValueError("response_axis must be one of x, y, z")
+    inputs = [v for v in VARIABLES if v != response_axis]
+    return {"x1": inputs[0], "x2": inputs[1], "y": response_axis}
 ## extrapolate=True of the legacy surface eval maps to the safest explicit policy
 LEGACY_EXTRAPOLATION = "linear"
 
@@ -37,7 +50,13 @@ class _SurfaceMetadataMixin:
         self.relation_uid = data.get("relation_uid")
         self.relation_name = data.get("relation_name")
 
-        # Labels and scales
+        # The variable the surface models (response axis): "x", "y" or "z" among its
+        # relation's variables (a lofted relation's curves' x, y and level; a stacked one's
+        # subsets' x, y and z), with their names; None for single-subset relations
+        self.response_axis = data.get("response_axis")
+        self.variables = data.get("variables")
+
+        # Labels and scales: roles - the inputs x1, x2 and the response y
         labels = data.get("labels", {}) or {}
         self.x1_label = labels.get("x1")
         self.x2_label = labels.get("x2")
@@ -105,8 +124,10 @@ class SplineSurface(_SurfaceMetadataMixin, ParametricBivariateSpline):
         """
         Load and assemble raw data points from all associated subsets.
 
-        Each subset contains (x1, y) data points. The x2 coordinate for
-        each subset is taken from `x2_values`.
+        Each subset holds (x, y) points of a curve; its level z is taken from `x2_values`.
+        The points come in the surface's roles, ``[x1, x2, y]``: by default (response y)
+        ``[x, z, y]``; with the level as the response (``response_axis == "z"``, e.g.
+        contour lines) ``[x, y, z]``; with x, ``[y, z, x]``.
 
         Returns
         -------
@@ -118,11 +139,13 @@ class SplineSurface(_SurfaceMetadataMixin, ParametricBivariateSpline):
         if not self.subsets:
             self.load_subsets()
 
+        roles = role_variables(self.response_axis or "y")
         data = []
         for i, item in enumerate(self.subsets):
             subset_data = item[1]
             for point in subset_data:
-                data.append([point[0], self.x2_values[i], point[1]])
+                values = {"x": point[0], "y": point[1], "z": self.x2_values[i]}
+                data.append([values[roles["x1"]], values[roles["x2"]], values[roles["y"]]])
 
         return self.labels, np.array(data)
 

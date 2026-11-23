@@ -139,6 +139,29 @@ their points one after another, z filled in from each subset's value, and
 (`subset_uid`, `z`, `n_points`); a subset without a z value is left out.
 `stack_subsets(sources, tables, mapping)` does the same for tables from `load_subset`.
 
+### Which variable a surface models
+
+Lofted and stacked relations are built from curves (or subsets) at constant levels: each
+curve gives y over x at its level z. The relation's author chooses which of the three the
+surface models - by default y = f(x, z) for lofted relations (a curve family) and
+z = f(x, y) for stacked ones (contour lines) - and the inputs are the other two, in
+(x, y, z) order. `surface.response_axis` is that variable (`"x"`, `"y"` or `"z"`),
+`surface.variables` their names, and `surface.labels` the roles `[x1, x2, y]`.
+
+```python
+surface = load_model('srf_xxxxxxxxxxxx')   # a terrain lofted through its contour lines
+surface.response_axis                      # 'z'
+surface.variables                          # {'x': 'Easting', 'y': 'Northing', 'z': 'Altitude'}
+surface.labels                             # ['Easting', 'Northing', 'Altitude']
+surface.eval(easting, northing)            # the altitude there
+labels, data = surface.load_data()         # [x1, x2, y] rows: easting, northing, altitude
+```
+
+Evaluation always takes the two inputs and returns the response. Where the surface folds
+over its inputs' plane (some inputs have two responses), it returns one of them; the
+platform warns about such surfaces. `role_variables(response_axis)` gives the role ->
+variable map.
+
 `surface.to_parametric()` returns the same surface as a `ParametricBivariateSpline`.
 
 ## Hypersurfaces: models with 3 or 4 inputs
