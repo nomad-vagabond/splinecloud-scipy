@@ -15,6 +15,7 @@ from splinecloud_scipy import (
     NdBsplExplicit,
     load_model,
     melt_grid,
+    stack_subsets,
     load_spline_hypersurface,
     load_multivariate_relation,
     SplineHyperSurface,
@@ -341,6 +342,48 @@ class ExplicitSurfaceClientTests(unittest.TestCase):
         ## row 3 has no x1 value: none of its cells is a point
         np.testing.assert_allclose(data, [[1, 0.2, 8], [1, 0.3, 10], [2, 0.2, 9], [2, 0.3, 11]])
         self.assertIsNone(surface.excluded_points)
+
+    @responses.activate
+    def test_load_data_stacked(self):
+        ## two contour lines (x, y) at z = 2 and z = 1, a third subset without z; the surface
+        ## lists the first two, the relation's sources list them in z order
+        self._add_surface({**explicit_surface_response(),
+                           "subset_uids": ["sbt_subset000002", "sbt_subset000001"]})
+        relation_url = SPLINECLOUD_API_URL + '/relations/bivariate/fitted/dr2_relation0001/'
+        sources = [
+            {"subset_uid": "sbt_subset000002", "z": 1.0, "z_mapped": True, "n_points": 2},
+            {"subset_uid": "sbt_subset000001", "z": 2.0, "z_mapped": False, "n_points": 1},
+            {"subset_uid": "sbt_subset000003", "z": None, "z_mapped": True, "n_points": 1},
+        ]
+        responses.add(responses.GET, relation_url, status=200, json={
+            "uid": "dr2_relation0001", "data_format": "stacked", "subset": None,
+            "data_mapping": {"x1_idx": 0, "x2_idx": 1, "y_idx": "z"}, "sources": sources,
+            "excluded_points": [False, True, False],
+        })
+        tables = {
+            "sbt_subset000001": {"x": {"0": 0.5, "1": 0.7}, "y": {"0": 5.0, "1": None}},
+            "sbt_subset000002": {"x": {"0": 0.1, "1": 0.2}, "y": {"0": 1.0, "1": 2.0}},
+            "sbt_subset000003": {"x": {"0": 9.0}, "y": {"0": 9.0}},
+        }
+        for uid, table in tables.items():
+            responses.add(responses.GET, SPLINECLOUD_API_URL + '/subsets/{}/'.format(uid),
+                          status=200, json={"table": table})
+        surface = load_spline_surface("srf_fitted000001")
+        labels, data = surface.load_data()
+        self.assertEqual(surface.data_format, "stacked")
+        self.assertEqual(surface.sources, sources)
+        ## subset by subset in sources order; the row with a gap and the subset without z out
+        np.testing.assert_allclose(data, [[0.1, 1.0, 1.0], [0.2, 2.0, 1.0], [0.5, 5.0, 2.0]])
+        np.testing.assert_array_equal(surface.excluded_points, [False, True, False])
+
+    def test_stack_subsets_z_role(self):
+        ## z as the first input: x1 = z, x2 = column 0, y = column 1
+        tables = {"sbt_a": (["x", "y"], np.array([[1.0, 10.0], [2.0, 20.0]], dtype=object))}
+        data = stack_subsets([{"subset_uid": "sbt_a", "z": 7.0}], tables,
+                             {"x1_idx": "z", "x2_idx": 0, "y_idx": 1})
+        np.testing.assert_allclose(data, [[7.0, 1.0, 10.0], [7.0, 2.0, 20.0]])
+        with self.assertRaises(ValueError):
+            stack_subsets([], tables, {"x1_idx": 0, "x2_idx": 1, "y_idx": 1})
 
     def test_melt_grid_errors(self):
         table = np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 5.0]])

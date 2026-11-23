@@ -1,5 +1,5 @@
 from .api_client import (load_model, load_spline, load_subset, load_spline_surface, SPLINECLOUD_API_URL,
-                         SplineSurface, ExplicitSplineSurface, melt_grid,
+                         SplineSurface, ExplicitSplineSurface, melt_grid, stack_subsets,
                          load_spline_hypersurface, load_multivariate_relation,
                          SplineHyperSurface, MultivariateRelation,
                          load_lofted_relation_3d, SplineVolume, LoftedRelation3D)

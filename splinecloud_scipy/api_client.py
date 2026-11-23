@@ -152,7 +152,8 @@ class ExplicitSplineSurface(_SurfaceMetadataMixin, NdBsplExplicit):
         self.accuracy = data.get("accuracy")
         self.fit_status = data.get("fit_status")
         self.excluded_points = None     ## set by load_data()
-        self.data_format = None         ## set by load_data(): "vector" or "matrix"
+        self.data_format = None         ## set by load_data(): "vector", "matrix" or "stacked"
+        self.sources = None             ## set by load_data() for "stacked" relations
 
     @staticmethod
     def _policy(extrapolate):
@@ -215,9 +216,13 @@ class ExplicitSplineSurface(_SurfaceMetadataMixin, NdBsplExplicit):
         Long-form relations read their mapped columns (x1, x2, y); rows with a gap in one of
         them are skipped. Grid (matrix) relations - x1 down a column, x2 in the column
         headers or in a row, y in the cells - are melted into one point per filled cell,
-        row by row; an empty cell is skipped. Both follow the platform, so the points line
-        up with the relation's exclusion mask, stored in ``self.excluded_points`` (None
-        when nothing is excluded). ``self.data_format`` is ``"vector"`` or ``"matrix"``.
+        row by row; an empty cell is skipped. Stacked relations - several subsets (e.g. the
+        contour lines of a chart), each at a constant z - read their columns from every
+        subset and take the z role from the subset's z, subset by subset in the relation's
+        ``sources`` order (``self.sources``); a subset without a z value is skipped. All
+        follow the platform, so the points line up with the relation's exclusion mask,
+        stored in ``self.excluded_points`` (None when nothing is excluded).
+        ``self.data_format`` is ``"vector"``, ``"matrix"`` or ``"stacked"``.
 
         Returns
         -------
@@ -232,15 +237,21 @@ class ExplicitSplineSurface(_SurfaceMetadataMixin, NdBsplExplicit):
 
         if not self.subsets:
             self.load_subsets()
-        columns, table = self.subsets[0]
 
-        if self.data_format == "matrix":
+        if self.data_format == "stacked":
+            self.sources = relation.get("sources") or []
+            tables = dict(zip(self.subset_uids, self.subsets))
+            for source in self.sources:
+                ## a subset added to the relation after this surface was fitted
+                if source["subset_uid"] not in tables:
+                    tables[source["subset_uid"]] = load_subset(source["subset_uid"])
+            data = stack_subsets(self.sources, tables, mapping)
+        elif self.data_format == "matrix":
+            columns, table = self.subsets[0]
             data = melt_grid(columns, table, mapping)
         elif self.data_format == "vector":
-            data = np.column_stack([
-                _as_floats(table[:, col], strict=False)
-                for col in (mapping["x1_idx"], mapping["x2_idx"], mapping["y_idx"])])
-            data = data[np.all(np.isfinite(data), axis=1)]
+            columns, table = self.subsets[0]
+            data = _long_form(table, (mapping["x1_idx"], mapping["x2_idx"], mapping["y_idx"]))
         else:
             raise ValueError("Unknown data format '{}'".format(self.data_format))
 
@@ -257,6 +268,50 @@ def _long_form(table, colnums):
     so the points line up with the relation's exclusion mask)."""
     data = np.column_stack([_as_floats(table[:, col], strict=False) for col in colnums])
     return data[np.all(np.isfinite(data), axis=1)]
+
+
+## the roles of a stacked relation's data_mapping, in point order [x1, x2, y], and the role
+## value that stands for the subset's z instead of a column
+STACKED_ROLES = ("x1_idx", "x2_idx", "y_idx")
+STACKED_Z = "z"
+
+
+def stack_subsets(sources, tables, mapping):
+    """
+    Points of a stacked relation, as SplineCloud joins them.
+
+    Parameters
+    ----------
+    sources : list of dict
+        The relation's ``sources``, in point order: ``{"subset_uid", "z", ...}``. A source
+        whose ``z`` is None is skipped.
+    tables : dict
+        ``{subset uid: (columns, table)}`` (as returned by ``load_subset``).
+    mapping : dict
+        The relation's ``data_mapping``: each of ``x1_idx``, ``x2_idx``, ``y_idx`` is a
+        column index of the subsets (they share their columns) or ``"z"``, the subset's z.
+
+    Returns
+    -------
+    ndarray
+        An (N, 3) array of ``[x1, x2, y]``: subset by subset, one point per row with a
+        value in every mapped column, the z role filled with the subset's z.
+    """
+    if sum(mapping[role] == STACKED_Z for role in STACKED_ROLES) != 1:
+        raise ValueError("A stacked mapping maps exactly one role to 'z'")
+    colnums = [mapping[role] for role in STACKED_ROLES if mapping[role] != STACKED_Z]
+
+    parts = []
+    for source in sources:
+        if source.get("z") is None:
+            continue
+        _columns, table = tables[source["subset_uid"]]
+        values = _long_form(table, colnums)
+        z = np.full(len(values), float(source["z"]))
+        columns = iter(values.T)
+        parts.append(np.column_stack([z if mapping[role] == STACKED_Z else next(columns)
+                                      for role in STACKED_ROLES]))
+    return np.concatenate(parts) if parts else np.empty((0, 3))
 
 
 def _mask(values, n_points):

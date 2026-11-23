@@ -130,6 +130,14 @@ points either way. For a grid, that is one point per filled cell, row by row, an
 mapping)` does the same for a table from `load_subset`. Grid headers and x1 cells may be
 labelled, as `Re=1e5` or `Mach: 0.8`, when every value of the axis carries the same label.
 
+A surface can also be fitted to several subsets at once, such as the contour lines of a chart
+digitised as one subset per line: each subset holds (x, y) points at a constant z, its z
+value, and the surface is z = f(x, y). `load_data()` then loads every subset and returns
+their points one after another, z filled in from each subset's value, and
+`surface.data_format` is `"stacked"`. `surface.sources` lists the subsets in that order
+(`subset_uid`, `z`, `n_points`); a subset without a z value is left out.
+`stack_subsets(sources, tables, mapping)` does the same for tables from `load_subset`.
+
 `surface.to_parametric()` returns the same surface as a `ParametricBivariateSpline`.
 
 ## Hypersurfaces: models with 3 or 4 inputs
